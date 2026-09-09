@@ -281,6 +281,14 @@ class Handler(BaseHTTPRequestHandler):
             v = data.get(k)
             if v is not None and str(v).strip():
                 merged[k] = str(v).strip()
+        # model_prefs：图像模板的模型偏好（{"sdxl": "模型名", "sd15": "模型名"}）。
+        # 朋友设备模型名不同时，模板按此优先绑定本机模型
+        v = data.get("model_prefs")
+        if isinstance(v, dict):
+            prefs = {str(kk): str(vv).strip()
+                     for kk, vv in v.items() if str(vv).strip()}
+            if prefs:
+                merged["model_prefs"] = prefs
         _cfg.save_user_settings(merged)
         # 热生效：所有项目的 Brain LLM 重读配置
         for bs in SESSION.sessions.values():

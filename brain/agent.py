@@ -273,6 +273,7 @@ class Brain:
 6. **增量迭代**：用户反馈"改XX"时用 edit_workflow（class_type 定位节点，如提示词节点是 CLIPTextEncode）修改上一版，不要从头重建。
 7. **交付格式**：完成时用中文总结：做了什么（模板/关键参数）→ 产物在哪（本地路径）→ 评估结论。不再调用工具时输出纯文本即结束。
 8. 模型/节点不确定时用 list_models / search_nodes / learn_node 查询，不要猜。
+9. **模型自动适配**：图像模板（t2i/i2i/style_transfer/upscale_pass）的 checkpoint 会自动绑定本机模型——除非用户点名用某模型，否则不要传 ckpt 参数；技能文档里出现具体模型名只是开发机示例，本机缺失时引擎会自动换成同家族模型（settings.json 的 model_prefs 可指定偏好）。
 
 ## 领域技能库（节点速查 + 建图方法论，自由合成必读）
 {skills_blob}"""}]

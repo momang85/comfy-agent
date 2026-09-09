@@ -114,4 +114,28 @@ for o in get("/api/status")["outputs"][:2]:
 assert not (PROJ / "settings.json").exists()
 print("[6] 项目目录未被写入任何 friend 配置 ✓")
 
+# 7) 模型自动适配仿真：朋友设备没有开发机的默认模型（novaAnimeXL），
+#    只有一个任意 SD1.5 模型 -> t2i 应自动绑定它并收敛分辨率到 512
+from comfy_agent.knowledge import Knowledge            # noqa: E402
+from comfy_agent.model_adapt import adapt_ckpt         # noqa: E402
+from comfy_agent.templates.image import T2I, SDXL_CKPT  # noqa: E402
+
+real = Knowledge.build()
+friend_k = Knowledge(
+    snapshot=real.snapshot,
+    models={**real.models,
+            "checkpoints": ["anything-v5-PrtRE.safetensors"]})
+params, notes = adapt_ckpt(T2I(SDXL_CKPT), {}, friend_k)
+assert params.get("ckpt") == "anything-v5-PrtRE.safetensors", params
+assert params.get("width") == 512 and params.get("height") == 512, params
+assert notes and "自动适配" in notes[0], notes
+print(f"[7] 缺 novaAnimeXL 的设备：t2i 自动适配为 {params['ckpt']}"
+      f"（分辨率收敛 512）✓")
+
+# 8) model_prefs 经前端设置接口保存（朋友指定自己的偏好模型）
+post("/api/settings", {"model_prefs": {"sd15": "anything-v5-PrtRE.safetensors"}})
+s = config.load_user_settings()
+assert s.get("model_prefs", {}).get("sd15") == "anything-v5-PrtRE.safetensors"
+print("[8] model_prefs 经 /api/settings 保存并生效 ✓")
+
 print("\n=== Friend-mode 仿真通过：他人设备可用 ===")

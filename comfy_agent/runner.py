@@ -18,10 +18,12 @@ from pathlib import Path
 from . import config
 from .client import Client, ComfyUIError
 from .knowledge import Knowledge
+from .model_adapt import adapt_ckpt, checkpoint_exists
 from .repair import (auto_repair, parse_server_validation_error,
                      parse_execution_error, suggest_for_execution_error,
                      friendly_error_zh)
 from .templates import get_template
+from .templates.base import _folders_for
 from .validate import validate_workflow, ValidationIssue
 
 # 确定性自动修复的最大轮数
@@ -212,15 +214,29 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     # 参数幻觉警告：大脑发明的参数名（duration/num_frames 等）不再被
     # 静默忽略——执行照常，但结果中显式告知哪些参数未生效
     known = {prm.name for prm in tpl.params()}
-    unknown = [k for k in (params or {}) if k not in known]
+    params = dict(params or {})
+    unknown = [k for k in params if k not in known]
     knowledge = kw.get("knowledge") or Knowledge.build()
-    missing = tpl.missing_models(knowledge)
+    # 跨设备模型适配：默认/显式 checkpoint 本机不存在时，自动绑定本机模型
+    params, adapt_notes = adapt_ckpt(tpl, params, knowledge)
+    ckpt_default = next((p.default for p in tpl.params()
+                         if p.name == "ckpt"), None)
+    ckpt_ok = bool(params.get("ckpt")) and \
+        checkpoint_exists(knowledge, params["ckpt"])
+    # 已适配的 checkpoint 不再算缺失；其余模型（controlnet/vae/视频文件等）
+    # 缺失仍按缺模型报错
+    missing = [m for m in tpl.models_used
+               if not knowledge.find_model(m, folders=_folders_for(m))
+               and not (ckpt_ok and m == ckpt_default)]
     if missing:
         _emit_stage("validation_failed",
                     {"detail": {"error": f"缺少模型: {missing}"}})
         return {"ok": False, "stage": "render_failed",
                 "error": f"模板 {template_id} 缺少模型: {missing}",
-                "missing_models": missing}
+                "missing_models": missing,
+                "hint": ("图像模板会自动适配本机任意 SDXL/SD1.5 checkpoint"
+                         "（可用 settings.json 的 model_prefs 指定偏好）；"
+                         "视频模板需安装对应模型文件，见 README 模型要求")}
     try:
         wf = tpl.render(params)
     except Exception as e:
@@ -229,11 +245,14 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
         return {"ok": False, "stage": "render_failed",
                 "error": f"渲染失败: {e}"}
     result = run_workflow(wf, source=f"template:{template_id}", **kw)
+    warnings = list(adapt_notes)
     if unknown:
-        warn = (f"模板 {template_id} 不识别参数 {unknown}（已忽略）。"
-                f"支持参数: {sorted(known)}")
-        result.setdefault("warnings", []).append(warn)
-        _emit_stage("warning", {"detail": {"warning": warn}})
+        warnings.append(f"模板 {template_id} 不识别参数 {unknown}（已忽略）。"
+                        f"支持参数: {sorted(known)}")
+    for w in warnings:
+        _emit_stage("warning", {"detail": {"warning": w}})
+    if warnings:
+        result.setdefault("warnings", []).extend(warnings)
     return result
 
 

@@ -1,10 +1,17 @@
 # 文生图 / 图生图（t2i / i2i）
 
 ## 模板选择
-- 用户没指定模型 → 默认 `t2i`（novaAnimeXL SDXL）
-- 明确要快/要轻量/要SD1.5 → `t2i` 传 `ckpt: "sd1.5\\anything-v5.safetensors"`（此时分辨率默认 512）
+- 用户没指定模型 → 默认 `t2i`，**不要传 ckpt**：引擎自动绑定本机模型
+  （优先 settings.json 的 `model_prefs` 偏好，其次同家族，最后任意 checkpoint）
+- 明确要快/要轻量/要SD1.5 → 让引擎自动适配即可，除非用户点名某模型才传 `ckpt`
 - 有输入图片+要改内容/风格 → `i2i`
 - 要锁姿势换画风 → `style_transfer`
+
+## 模型适配（重要）
+- 文档中出现的 novaAnimeXL/anything-v5 只是开发机示例模型名；
+  本机缺失时引擎自动换成同家族模型（适配说明会出现在结果 warnings 里）
+- 本机没有任何 checkpoint 时模板会报"缺少模型"——此时告知用户先装任意
+  SDXL 或 SD1.5 模型，而不是反复重试
 
 ## 提示词写法（SDXL/SD1.5，CLIP 编码器）
 - 英文 booru 标签，逗号分隔，质量词在前：`masterpiece, best quality, ...`

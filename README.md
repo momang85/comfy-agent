@@ -51,15 +51,54 @@ python -m brain "画一只赛博朋克橘猫，1024x1024，4张"   # 一次性�
 ### 隐私说明
 - 你的对话记录、技能记忆、产物全部存在本机 `.comfy-agent/` 目录（已被 git 忽略，不会进入仓库）
 - API key 仅存本机 `settings.json`（gitignored）；前端界面只显示脱敏尾号
+- 图片/视频/工作流文件不上传任何第三方，只在本机 ComfyUI 与你自己配置的 LLM 服务之间流转
 
-## 模板库（7个，全部基于本机真实模型）
+## 朋友使用指南（拿到代码后 5 分钟跑通）
+
+### 0. 前置
+- ComfyUI 已装好且能启动（0.3x；绘世整合包或手动安装均可）
+- `ComfyUI/models/checkpoints/` 里至少有一个 **SDXL 或 SD1.5 checkpoint**（任何模型都行；没有就从 Civitai / HuggingFace 下载一个 `.safetensors` 放进去）
+- 一个 OpenAI 兼容 LLM API key（智谱 z.ai / DeepSeek / Kimi / OpenAI 任一）
+- 用视频模板另需对应模型文件（见下方「模型要求」）
+
+### 1. 三步安装
+按上面「快速开始」：`install.bat` 填一次 ComfyUI 安装路径 → 双击「一键启动.bat」→ 右上角 ⚙ 填 key。
+
+### 2. 首次使用（直接说中文）
+| 你说的话 | 发生什么 |
+|---|---|
+| "画一只戴着红色围巾的小狐狸" | 自动选模板 → 写英文提示词 → 出图 → VLM 评估 → 中文交付 |
+| 📎 传一张图 + "改成吉卜力风格" | 先看图 → i2i/style_transfer → 按评估迭代 → 交付 |
+| "画一只猫，然后放大两倍" | compose 管线一次提交两段执行 |
+| 顶栏切换项目 | 不同需求分项目，记忆与产物互不干扰 |
+
+### 3. 模型要求（模型名不一样也能跑）
+| 模板 | 需要你装什么 | 适配 |
+|---|---|---|
+| t2i / i2i / upscale_pass | **任意** SDXL 或 SD1.5 checkpoint | ✅ 自动适配：模板默认模型（novaAnimeXL 等）本机不存在时，自动绑定你本机的同家族模型，无需改任何配置 |
+| style_transfer | 任意 SDXL checkpoint + ControlNet 文件 | checkpoint 自动适配；ControlNet（canny）需 `controlnet++_union_sdxl_promax.safetensors` |
+| minimax_t2v / minimax_i2v | MiniMax H3 unet + turbo LoRA + qwen3vl + video vae | 视频模板按文件名匹配，需原名安装 |
+| ltx_i2v | LTX-2.3 checkpoint + LoRA + 本地 Gemma 编码器 | 同上 |
+
+- **适配优先级**：`settings.json` 的 `model_prefs`（如 `{"sdxl": "我的模型.safetensors"}`）> 同家族模型 > 任意 checkpoint；适配成功时对话里会提示"已自动适配"
+- 想指定偏好模型：编辑 `.comfy-agent/settings.json` 加 `model_prefs` 字段即可
+- 视频/ControlNet/LoRA 的具体文件名见 `comfy_agent/templates/video.py`、`image.py` 顶部常量
+
+### 4. FAQ
+- **我的模型名和 README 里不一样，会失败吗？** 图像模板不会——运行期自动绑定本机 checkpoint；只有视频模板按文件名找模型，需按原名安装。
+- **没有 NVIDIA 卡 / 显存小？** ComfyUI 低显存模式或 CPU 模式都能跑通全流程（慢一些）；执行期 OOM 时引擎自动降分辨率/批数并重试一次。
+- **key 安全吗？** 只存本机 `.comfy-agent/settings.json`（gitignored），只发给你自己配置的 LLM 地址；对话、记忆、产物全在本机。
+- **能用别的 LLM 吗？** 任意 OpenAI 兼容服务（DeepSeek/Kimi/OpenAI/本地 Ollama）都行，⚙ 面板改 base_url 与模型名，保存即热生效。
+- **连朋友机器上的 ComfyUI 可以吗？** 默认只连本机 127.0.0.1（SSRF 防护）；确有需要设 `COMFY_ALLOW_LAN=1` 再改 `COMFY_URL`。
+
+## 模板库（7个，图像模板自动适配本机 checkpoint）
 
 | ID | 名称 | 模型 | 来源 |
 |---|---|---|---|
-| t2i | 文生图(默认SDXL) | novaAnimeXL | 手写 |
-| t2i | 文生图(轻量) | anything-v5 | 手写（ckpt 参数切换） |
-| i2i | 图生图 | novaAnimeXL | 对齐用户已验证工作流 |
-| style_transfer | 风格转绘 | novaAnimeXL+ControlNet | 对齐用户已验证工作流 |
+| t2i | 文生图(默认SDXL) | 任意 SDXL（自动适配） | 手写 |
+| t2i | 文生图(轻量) | 任意 SD1.5（ckpt 参数切换） | 手写 |
+| i2i | 图生图 | 任意 SDXL（自动适配） | 对齐用户已验证工作流 |
+| style_transfer | 风格转绘 | 任意 SDXL+ControlNet | 对齐用户已验证工作流 |
 | minimax_t2v | 文生视频 | MiniMax H3+Qwen3VL+turbo | 从本机节点签名构建 |
 | minimax_i2v | 图生视频 | 同上+首帧 | 同上 |
 | ltx_i2v | 图生视频 | LTX-2.3+本地Gemma | 对齐用户12GB优化工作流 |
@@ -86,6 +125,7 @@ comfy_agent/          执行引擎（纯标准库，可独立使用）
   convert.py          UI→API 格式转换器（工作流 agent 化基建）
   validate.py         本地预校验
   repair.py           自动修复（含 OOM 降参、同家族模型匹配）
+  model_adapt.py      跨设备模型自动适配（默认 checkpoint 缺失→绑定本机同家族模型）
   promptspec.py       提示词家族规范（SDXL标签/LTX英文/MiniMax中文）
   templates/          7 个模板
   runner.py           执行编排
@@ -191,7 +231,8 @@ python -m brain --web   # 启动内置 Web UI，浏览器自动打开 http://127
 - ✅ **Skill 库**：1527 节点全量档案、1511 个 L0 一行用途、12 家族技能、抽查 20/20 档案有描述
 - ✅ 图合成：compose(t2i→upscale_pass) 两段产物；ControlNet(canny) 锁构图真实出图
 - ✅ 从零建图：scaffold→propose_edit→真实执行出图
-- ✅ 46/46 单测通过
+- ✅ 跨设备适配：缺失模板默认模型时自动绑定本机同家族 checkpoint（friend-mode 仿真验证）
+- ✅ 89/89 单测通过
 
 ## Phase 2 路线（见调研报告）
 
