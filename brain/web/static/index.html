@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ComfyUI 大脑</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header id="topbar">
+  <div class="brand">🧠 ComfyUI 大脑</div>
+  <select id="projectsel" title="切换项目（上下文完全隔离）"></select>
+  <button id="newproject" title="新建项目">＋新建项目</button>
+  <div id="stagebar" class="stagebar">
+    <span class="stage" data-s="validate">校验</span>
+    <span class="stage" data-s="repair">修复</span>
+    <span class="stage" data-s="submit">提交</span>
+    <span class="stage" data-s="run">执行</span>
+    <span class="stage" data-s="download">下载</span>
+    <span class="stage" data-s="evaluate">评估</span>
+  </div>
+  <div id="statusline">空闲</div>
+  <div id="vram" class="vram" title="GPU 显存">GPU --</div>
+  <div id="queue" class="queue">队列 --</div>
+  <button id="stopbtn" title="中断当前任务">■ 停止</button>
+  <button id="settingsbtn" title="大脑 API 设置">⚙</button>
+</header>
+
+<main id="layout">
+  <aside id="chatpane" class="pane">
+    <div id="chat" class="chat"></div>
+    <div id="attachbar" class="attachbar hidden"></div>
+    <form id="inputform" autocomplete="off">
+      <button type="button" id="attachbtn" title="添加图片（支持拖拽/粘贴，单张）">📎</button>
+      <input id="input" type="text"
+             placeholder="用自然语言描述需求，可附图片做图生图/改图">
+      <input type="file" id="fileinput" accept="image/png,image/jpeg,image/webp" hidden>
+      <button type="submit">发送</button>
+    </form>
+  </aside>
+
+  <section id="graphpane" class="pane">
+    <div class="pane-title">工作流 <span id="graphmeta"></span></div>
+    <div id="graphwrap">
+      <svg id="graph" xmlns="http://www.w3.org/2000/svg"></svg>
+      <div id="graphempty">还没有工作流。发送任务后，AI 构建的工作流会实时显示在这里。</div>
+    </div>
+    <div id="graphtools">
+      <button id="gz-in" title="放大">＋</button>
+      <button id="gz-out" title="缩小">－</button>
+      <button id="gz-fit" title="适配窗口">⤢</button>
+      <button id="gz-reset" title="重置视图">⟲</button>
+      <span id="gz-hint">滚轮缩放 · 拖拽平移 · 双击复位</span>
+    </div>
+  </section>
+
+  <aside id="detailpane" class="pane">
+    <div class="pane-title">详情</div>
+    <div id="details">
+      <div id="nodedetail" class="card hidden"></div>
+      <div id="evals"></div>
+      <div id="memory"></div>
+    </div>
+    <div class="pane-title">产物</div>
+    <div id="gallery" class="gallery"></div>
+  </aside>
+</main>
+
+<div id="lightbox" class="hidden"><img id="lightboximg" alt=""></div>
+
+<div id="settingsmodal" class="modal hidden">
+  <div class="modal-box">
+    <h3>大脑 API 设置</h3>
+    <label>API 地址 <input id="set_base" placeholder="https://api.z.ai/api/paas/v4"></label>
+    <label>API Key <input id="set_key" type="password" placeholder="sk-..." autocomplete="off">
+      <button type="button" id="set_key_toggle" class="mini">显示</button></label>
+    <label>大脑模型 <input id="set_model" placeholder="glm-4.5-air"></label>
+    <label>视觉模型 <input id="set_vmodel" placeholder="glm-4.6v"></label>
+    <div class="modal-note">Key 仅保存在本机 .comfy-agent/settings.json（不入 git）。与大脑模型同 key 时视觉 key 留空即可。</div>
+    <div class="modal-actions">
+      <button id="set_save">保存</button>
+      <button id="set_close">关闭</button>
+    </div>
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

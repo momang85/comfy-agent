@@ -1,0 +1,11 @@
+# 运行时数据（产物/知识库/技能/会话审计）不入库
+.comfy-agent/
+# 安全扫描器台账
+.mimosa/
+# 本机 ComfyUI 路径配置（install.bat 生成）
+comfy_root.local
+# Python 缓存
+__pycache__/
+*.pyc
+# 其他
+*.log

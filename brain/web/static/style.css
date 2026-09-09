@@ -1,0 +1,161 @@
+/* ComfyUI 大脑 Web UI */
+:root {
+  --bg: #10131a; --panel: #171b24; --panel2: #1e2330;
+  --text: #d8dee9; --dim: #8a93a6; --accent: #4f9dff;
+  --ok: #3fb96a; --warn: #e8b339; --err: #e05555;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ---- 顶栏 ---- */
+#topbar {
+  display: flex; align-items: center; gap: 16px;
+  padding: 8px 16px; background: var(--panel);
+  border-bottom: 1px solid #262c3a; flex: none;
+}
+.brand { font-weight: 700; color: #fff; }
+.stagebar { display: flex; gap: 4px; flex: 1; }
+.stage {
+  padding: 4px 12px; border-radius: 14px; background: var(--panel2);
+  color: var(--dim); font-size: 12px;
+}
+.stage.active { background: var(--accent); color: #fff; }
+.stage.fail { background: var(--err); color: #fff; }
+.stage.done { background: #2c3e50; color: var(--text); }
+#statusline { font-size: 12px; color: var(--dim); min-width: 180px; }
+.vram, .queue { font-size: 12px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.vram.low { color: var(--warn); }
+#projectsel { background: var(--panel2); color: var(--text);
+  border: 1px solid #2c3548; border-radius: 8px; padding: 5px 8px; font-size: 13px; }
+#newproject, #stopbtn { background: var(--panel2); color: var(--text);
+  border: 1px solid #2c3548; border-radius: 8px; padding: 5px 10px;
+  cursor: pointer; font-size: 12px; }
+#stopbtn { border-color: var(--err); color: var(--err); }
+#stopbtn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* 图工具条 */
+#graphtools { position: absolute; right: 12px; bottom: 12px;
+  display: flex; gap: 4px; align-items: center; z-index: 5; }
+#graphtools button { background: var(--panel2); color: var(--text);
+  border: 1px solid #2c3548; border-radius: 6px; padding: 4px 9px;
+  cursor: pointer; font-size: 13px; }
+#graphtools button:hover { border-color: var(--accent); }
+#gz-hint { color: var(--dim); font-size: 10px; margin-left: 4px; }
+
+/* ---- 布局 ---- */
+#layout { flex: 1; display: grid; grid-template-columns: 360px 1fr 320px; min-height: 0; }
+.pane { min-height: 0; display: flex; flex-direction: column; }
+#chatpane { border-right: 1px solid #262c3a; }
+#detailpane { border-left: 1px solid #262c3a; overflow-y: auto; padding: 8px; }
+.pane-title { padding: 8px; font-size: 12px; color: var(--dim); text-transform: uppercase; }
+
+/* ---- 对话 ---- */
+.chat { flex: 1; overflow-y: auto; padding: 12px; }
+.msg { margin-bottom: 12px; }
+.msg.user .bubble { background: var(--accent); color: #fff; margin-left: 40px; }
+.msg.ai .bubble { background: var(--panel2); margin-right: 20px; }
+.bubble { border-radius: 10px; padding: 8px 12px; white-space: pre-wrap; word-break: break-word; }
+.reasoning {
+  border-left: 3px solid var(--dim); background: #141a26; color: var(--dim);
+  padding: 6px 10px; margin: 4px 20px 4px 0; font-size: 12px;
+  border-radius: 6px; max-height: 120px; overflow-y: auto;
+}
+.reasoning summary { cursor: pointer; user-select: none; }
+.toolcard {
+  background: #1a2130; border: 1px solid #2c3548; border-radius: 8px;
+  margin: 6px 0; padding: 6px 10px; font-size: 12px;
+}
+.toolcard .t { color: var(--accent); font-family: Consolas, monospace; }
+.toolcard.fail { border-color: var(--err); }
+.toolcard .sum { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#inputform { display: flex; gap: 6px; padding: 10px; border-top: 1px solid #262c3a; }
+#input { flex: 1; background: var(--panel2); border: 1px solid #2c3548;
+  border-radius: 8px; color: var(--text); padding: 8px 10px; outline: none; }
+#input:focus { border-color: var(--accent); }
+#inputform button { background: var(--accent); color: #fff; border: 0;
+  border-radius: 8px; padding: 8px 16px; cursor: pointer; }
+#inputform button:disabled { opacity: 0.5; }
+#inputform #attachbtn { background: var(--panel2); border: 1px solid #2c3548;
+  padding: 8px 12px; font-size: 15px; }
+#inputform #attachbtn:hover { border-color: var(--accent); }
+
+/* ---- 图片附件 ---- */
+.attachbar { display: flex; gap: 6px; padding: 8px 10px 0; flex: none; }
+.attachchip { display: inline-flex; align-items: center; gap: 8px;
+  background: var(--panel2); border: 1px solid #2c3548;
+  border-radius: 8px; padding: 4px 8px 4px 4px; }
+.attachchip img { height: 40px; border-radius: 5px; display: block; }
+.attachchip .fname { color: var(--dim); font-size: 11px;
+  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachchip .x { background: transparent; color: var(--dim);
+  border: 0; cursor: pointer; font-size: 12px; padding: 2px 4px; }
+.attachchip .x:hover { color: var(--err); }
+.bubble img.bubble-img { max-width: 180px; border-radius: 6px;
+  display: block; margin-top: 6px; cursor: zoom-in; }
+#chatpane.dragover { box-shadow: inset 0 0 0 2px var(--accent); }
+
+/* ---- 工作流图 ---- */
+#graphpane { position: relative; }
+#graphwrap { flex: 1; position: relative; overflow: hidden; }
+#graph { width: 100%; height: 100%; }
+#graphempty {
+  position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; color: var(--dim); font-size: 13px;
+}
+#graphmeta { font-size: 11px; color: var(--dim); text-transform: none; }
+.gnode { cursor: pointer; }
+.gnode rect { fill: #1c2333; stroke: #3a465e; stroke-width: 1.5; rx: 8; }
+.gnode text.t1 { fill: #fff; font-size: 12px; font-weight: 600; }
+.gnode text.t2 { fill: var(--dim); font-size: 10px; }
+.gnode.fail rect { stroke: var(--err); stroke-width: 2.5; }
+.gnode.exec rect { stroke: var(--ok); stroke-width: 2.5;
+  animation: breath 1.2s ease-in-out infinite; }
+.gnode.flash rect { animation: flash 1.6s ease-out 2; }
+.gedge { stroke: #4a5874; stroke-width: 1.4; fill: none; }
+.gedge-label { fill: var(--dim); font-size: 9px; }
+@keyframes breath { 50% { stroke-width: 5; filter: brightness(1.6); } }
+@keyframes flash { 0%,100% { stroke: #3a465e; } 40% { stroke: var(--warn); stroke-width: 4; } }
+
+/* ---- 详情/画廊 ---- */
+.card { background: var(--panel2); border-radius: 8px; padding: 8px; margin: 6px 0; font-size: 12px; }
+.card h4 { color: var(--accent); margin-bottom: 4px; font-size: 12px; }
+.card .kv { color: var(--dim); overflow: hidden; text-overflow: ellipsis; }
+.eval-pass { color: var(--ok); font-weight: 700; }
+.eval-fail { color: var(--err); font-weight: 700; }
+.issue { border-left: 2px solid var(--err); padding-left: 6px; margin: 3px 0; color: var(--text); font-size: 12px; }
+.issue .loc { color: var(--warn); }
+.mem-badge { display: inline-block; background: #2a3550; border-radius: 10px;
+  padding: 2px 8px; margin: 2px; font-size: 11px; color: var(--text); }
+.gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 4px; }
+.gallery-tip { grid-column: 1 / -1; color: var(--dim); font-size: 12px;
+  padding: 16px 8px; text-align: center; }
+.gallery .item { position: relative; cursor: pointer; border-radius: 6px; overflow: hidden; background: var(--panel2); }
+.gallery img, .gallery video { width: 100%; display: block; }
+.gallery .tag { position: absolute; bottom: 0; left: 0; right: 0; background: rgba(0,0,0,.6);
+  color: #fff; font-size: 10px; padding: 2px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+#lightbox { position: fixed; inset: 0; background: rgba(0,0,0,.85); display: flex;
+  align-items: center; justify-content: center; z-index: 99; }
+#lightbox img { max-width: 92vw; max-height: 92vh; border-radius: 6px; }
+.hidden { display: none !important; }
+
+/* 设置对话框 */
+.modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex;
+  align-items: center; justify-content: center; z-index: 100; }
+.modal-box { background: var(--panel); border: 1px solid #2c3548;
+  border-radius: 10px; padding: 20px; width: 420px; max-width: 92vw; }
+.modal-box h3 { margin-bottom: 12px; }
+.modal-box label { display: block; margin: 8px 0; font-size: 13px; color: var(--dim); }
+.modal-box input { width: 100%; background: var(--panel2); border: 1px solid #2c3548;
+  border-radius: 6px; color: var(--text); padding: 7px 10px; margin-top: 4px; }
+.modal-box .mini { margin-left: 6px; padding: 2px 8px; font-size: 11px; }
+.modal-note { font-size: 11px; color: var(--dim); margin: 8px 0; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+.modal-actions button { background: var(--panel2); color: var(--text);
+  border: 1px solid #2c3548; border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+.modal-actions button:hover { border-color: var(--accent); }
