@@ -46,8 +46,9 @@ FAMILY_GUIDES = {
 DEFAULT_NEGATIVE = {
     "sdxl": ("(worst quality, low quality:1.4), bad anatomy, bad hands, "
              "extra limbs, missing limbs, watermark, signature, text, logo"),
-    "sd15": ("(worst quality, low quality:1.4), bad anatomy, bad hands, "
-             "extra digits, fewer digits, watermark, signature, text"),
+    "sd15": ("(worst quality, low quality, normal quality:1.4), bad anatomy, "
+             "bad hands, extra digits, fewer digits, missing fingers, "
+             "watermark, signature, text"),
     "ltx": "blurry, distorted, low quality, watermark",
     "minimax": "模糊, 变形, 低质量, 水印",
 }

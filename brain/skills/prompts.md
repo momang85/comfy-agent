@@ -16,6 +16,7 @@
 9. **风格收尾**：anime style / Studio Ghibli style / watercolor / cel shading / semi-realistic（与所选模型一致，动漫模型别写 photorealistic）
 
 ### 技巧
+- **本机模型官方参数**：novaAnimeXL 官方卡推荐 Euler a、20-30 步、CFG 4-6（一次性出图用；hires/管线保持收敛型 dpmpp_2m 保证二段可复现）；anything-v5 系常用 DPM++ 2M Karras、25 步、CFG 7.5
 - **权重语法**：`(词:1.2)` 加强、裸 `(词)`=1.1、`[词]`=0.9、嵌套相乘；`BREAK` 提前开启新的 75-token 分段（防颜色/概念串味）
 - **别在正向写否定词**：`no hat`/`without glasses` 无效（CLIP 只做关联不做否定），去掉的东西写负面
 - **`[a:b:0.5]` 是 A1111 专属**：ComfyUI 里按时段换提示词要用 ConditioningSetTimestepRange，别把这种语法写进提示词
