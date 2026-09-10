@@ -41,6 +41,12 @@ SNAPSHOT = {
         "input": {"required": {"samples": ["LATENT", {}], "vae": ["VAE", {}]}},
         "output": ["IMAGE"], "output_name": ["IMAGE"],
         "input_order": {"required": ["samples", "vae"]}},
+    "VAEDecodeTiled": {
+        "input": {"required": {"samples": ["LATENT", {}], "vae": ["VAE", {}],
+                               "tile_size": ["INT", {"default": 512}],
+                               "overlap": ["INT", {"default": 64}]}},
+        "output": ["IMAGE"], "output_name": ["IMAGE"],
+        "input_order": {"required": ["samples", "vae", "tile_size", "overlap"]}},
     "VAEEncode": {
         "input": {"required": {"pixels": ["IMAGE", {}], "vae": ["VAE", {}]}},
         "output": ["LATENT"], "output_name": ["LATENT"],
@@ -88,6 +94,23 @@ SNAPSHOT = {
         "input_order": {"required": ["positive", "negative", "control_net",
                                      "image", "strength", "start_percent",
                                      "end_percent"]}},
+    "LatentUpscaleBy": {
+        "input": {"required": {"samples": ["LATENT", {}],
+                               "upscale_method": [["bicubic"], {}],
+                               "scale_by": ["FLOAT", {"default": 1.5}]}},
+        "output": ["LATENT"], "output_name": ["LATENT"],
+        "input_order": {"required": ["samples", "upscale_method", "scale_by"]}},
+    "ConditioningCombine": {
+        "input": {"required": {"conditioning_1": ["CONDITIONING", {}],
+                               "conditioning_2": ["CONDITIONING", {}]}},
+        "output": ["CONDITIONING"], "output_name": ["CONDITIONING"],
+        "input_order": {"required": ["conditioning_1", "conditioning_2"]}},
+    "VAEEncodeForInpaint": {
+        "input": {"required": {"pixels": ["IMAGE", {}], "vae": ["VAE", {}],
+                               "mask": ["MASK", {}],
+                               "grow_mask_by": ["INT", {"default": 6}]}},
+        "output": ["LATENT"], "output_name": ["LATENT"],
+        "input_order": {"required": ["pixels", "vae", "mask", "grow_mask_by"]}},
 }
 
 

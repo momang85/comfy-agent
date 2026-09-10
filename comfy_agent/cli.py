@@ -62,6 +62,8 @@ def main():
     p_upload.add_argument("path")
     p_refresh = sub.add_parser("refresh", help="刷新节点知识快照")
     sub.add_parser("inspect", help="本机知识摘要（给 LLM）")
+    sub.add_parser("capabilities", help="能力→节点审计表（节点+模型双重核验）")
+    sub.add_parser("health", help="连线健康审计（模板/骨架/类型覆盖/能力）")
 
     args = parser.parse_args()
     out = _dispatch(args)
@@ -76,6 +78,14 @@ def _dispatch(args) -> dict:
     if args.cmd == "templates":
         from .templates import catalog
         return {"ok": True, "templates": catalog()}
+    if args.cmd == "capabilities":
+        from .knowledge import Knowledge
+        from .nodes_prefs import capability_table
+        return {"ok": True,
+                "capabilities": capability_table(Knowledge.build())}
+    if args.cmd == "health":
+        from .health import audit_all
+        return audit_all()
     if args.cmd == "models":
         from .client import Client
         c = Client()

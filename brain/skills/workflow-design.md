@@ -7,6 +7,21 @@
 3. **每步验证**：propose_edit 批量提交，引擎做类型校验+环检测；被拒看诊断修改重提
 4. **小步走**：一次 propose 一个逻辑环节（加载→条件→采样→输出），不要一次塞十步
 
+## 提示词注入位置（关键知识点）
+- **正向/负向分开编码**：正负各一个 CLIPTextEncode（clip 都接 checkpoint 的槽1），
+  分别接 KSampler 的 positive/negative——不要共用一个编码器节点
+- **条件合并**：需要把两段条件拼起来时用 ConditioningCombine/ConditioningConcat
+  （如 ControlNet 输出 + 普通条件）；SDXL 有 text_g/text_l 双编码器时用
+  CLIPTextEncodeSDXL（若存在）
+- **IPAdapter 的文本注入**：IPAdapter 节点只有 image 输入没有 text 输入——
+  "用文字描述风格"只能走普通 CLIPTextEncode 接 KSampler，IPAdapter 是图像条件
+- **局部重绘的提示词**：VAEEncodeForInpaint 链的 KSampler 提示词只描述遮罩
+  区域内要出现的内容，不要重复全图描述
+- **FaceDetailer 自带 positive/negative**：接 CLIPTextEncode 输出，与主采样器
+  共用同一组条件即可，不需要再造编码器
+- 77 token 截断只发生在 CLIPTextEncode 内部——长提示词拆两个编码器各自接
+  positive/negative 没有意义；重要内容放提示词前 40 词
+
 ## 骨架模式
 
 **文生图骨架**（从空图，节点号自定）：

@@ -76,6 +76,81 @@ _MOTION_WORDS = ("camera", "zoom", "pan", "dolly", "tracking", "motion", "moving
                  "推近", "拉远", "移动", "转身", "走过", "飘", "缓慢", "动作")
 
 
+# 图像提示词分块结构 + 每块词库（引擎侧体检用，大脑侧详见 skills/prompts.md）。
+# 主体块无固定词库（由任务决定）；其余块用于检查"这一维度有没有写到"。
+BLOCK_VOCAB = {
+    "quality": ["masterpiece", "best quality", "absurdres", "highly detailed",
+                "8k wallpaper", "ultra-detailed", "sharp focus", "best shadow"],
+    "appearance": ["detailed eyes", "detailed face", "intricate hair",
+                   "fluffy fur", "detailed skin", "detailed clothes",
+                   "detailed armor", "jewelry", "ribbon", "hair ornament",
+                   "headwear", "glasses", "earrings", "frills", "lace"],
+    "action": ["sitting", "standing", "walking", "running", "lying down",
+               "reaching out", "looking at viewer", "looking away",
+               "holding", "dancing", "jumping", "flying", "floating",
+               "hand on chin", "arms crossed", "turning around", "smiling",
+               "waving", "reading a book", "sipping tea"],
+    "environment": ["indoors", "outdoors", "forest", "beach", "city street",
+                    "rooftop", "library", "cafe", "classroom", "bedroom",
+                    "mountain", "lake", "flower field", "starry sky",
+                    "underwater", "space station", "rainy street",
+                    "snowy landscape", "cherry blossoms", "bamboo grove",
+                    "shrine", "alley", "garden", "bridge", "port"],
+    "lighting": ["golden hour", "soft rim light", "volumetric lighting",
+                 "backlighting", "sunlight through window", "moonlight",
+                 "neon glow", "lens flare", "soft shadows", "dramatic lighting",
+                 "cinematic lighting", "diffuse daylight", "candlelight",
+                 "sunset glow", "blue hour", "studio lighting", "dappled light"],
+    "atmosphere": ["serene", "cozy", "mysterious", "epic", "romantic",
+                   "melancholic", "dreamy", "whimsical", "festive",
+                   "nostalgic", "tense", "magical", "ethereal", "lively",
+                   "intimate", "heroic"],
+    "composition": ["close-up", "portrait", "full body", "cowboy shot",
+                    "from above", "from below", "wide shot", "dutch angle",
+                    "depth of field", "bokeh", "rule of thirds",
+                    "symmetrical", "centered", "dynamic angle", "panoramic"],
+    "style": ["anime style", "watercolor", "oil painting", "pixel art",
+              "flat illustration", "semi-realistic", "cel shading",
+              "Studio Ghibli style", "retro anime 90s", "ink wash painting",
+              "pastel art", "photorealistic"],
+}
+
+# 视频族词库：动作/镜头/光影/音效（提示词体检与大脑词库共用）
+VIDEO_VOCAB = {
+    "motion": ["缓慢转身", "轻轻点头", "发丝飘动", "裙摆轻扬", "缓步走来",
+               "奔跑", "回头", "挥手", "闭眼微笑", "眨眼", "深呼吸",
+               "指尖轻触", "漂浮", "旋转", "迈步", "转头", "抬头",
+               "waving", "walking", "turning", "nodding", "drifting"],
+    "camera": ["镜头缓慢推近", "缓缓拉远", "环绕拍摄", "平移跟随", "俯拍",
+               "仰拍", "固定机位", "手持晃动", "第一人称", "快速甩镜",
+               "dolly in", "pan left", "pan right", "zoom in", "orbit",
+               "static shot", "tracking shot"],
+    "lighting": ["晨光", "黄昏逆光", "月光", "霓虹灯光", "烛光", "雾气",
+                 "阳光透过窗户", "波光粼粼", "golden hour", "rim light",
+                 "soft shadows"],
+    "audio": ["风声", "雨声", "海浪声", "鸟鸣", "脚步声", "轻音乐",
+              "琴声", "环境白噪音", "心跳声", "人群低语", "钟声",
+              "引擎声", "树叶沙沙", "水滴声"],
+}
+
+
+def block_coverage(family: str, prompt: str) -> dict:
+    """检查提示词覆盖了哪些维度块。返回 {present, missing, suggest}。"""
+    p = (prompt or "").lower()
+    blocks = BLOCK_VOCAB if family in ("sdxl", "sd15") else VIDEO_VOCAB
+    present, missing = [], []
+    for name, words in blocks.items():
+        if name in ("quality",) and family in ("sdxl", "sd15"):
+            continue                     # 质量词已由 check_prompt 单独处理
+        if any(w.lower() in p for w in words):
+            present.append(name)
+        else:
+            missing.append(name)
+    suggest = {name: BLOCK_VOCAB.get(name, VIDEO_VOCAB.get(name, []))[:4]
+               for name in missing}
+    return {"present": present, "missing": missing, "suggest": suggest}
+
+
 def merge_negative(family: str, negative: str) -> tuple[str, bool]:
     """默认负面 ∪ 用户补充（去重）。返回 (合并结果, 是否发生合并)。
 
@@ -133,6 +208,17 @@ def check_prompt(family: str, prompt: str, negative: str = "") -> dict:
                                                          "cartoon", "动画")):
         warnings.append("正向提示词风格自相矛盾（同时要 anime 与 realistic），"
                         "建议二选一")
+    # 维度覆盖体检：缺"光影/构图/动作/氛围"等维度块时给警告+词库建议。
+    # 只对英文标签做（中文自然语言提示词不按英文词库分词）。
+    ascii_ratio = sum(1 for c in p if ord(c) < 128) / max(len(p), 1)
+    if ascii_ratio > 0.6:
+        cov = block_coverage(family, p)
+        if cov["missing"]:
+            tips = "；".join(
+                f"{m} 如 {', '.join(cov['suggest'][m][:3])}"
+                for m in cov["missing"][:3])
+            warnings.append("提示词维度不完整（缺 " + "、".join(cov["missing"])
+                            + "），建议补充：" + tips)
     return {"prompt": p, "warnings": warnings}
 
 

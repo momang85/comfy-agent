@@ -7,7 +7,7 @@
   3. 枚举值合法（COMBO 选项）
   4. 数值范围（min/max）
   5. 文件型输入存在（模型/图片等，对照本机模型清单）
-  6. 连线引用存在且类型兼容（宽松：只查引用目标存在）
+  6. 连线引用存在且端口类型兼容（type_mismatch 也在本地拦下）
 """
 from __future__ import annotations
 
@@ -42,6 +42,13 @@ class ValidationIssue:
 
 def validate_workflow(api: dict, knowledge: Knowledge) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
+    # 连线类型推断器（synth.Graph 只依赖快照，懒导入避免 synth↔validate 循环）
+    graph_types = None
+    try:
+        from .synth.graph import Graph
+        graph_types = Graph(api, knowledge)
+    except Exception:
+        graph_types = None
     for node_id, node in api.items():
         cls = node.get("class_type", "")
         inputs = node.get("inputs", {})
@@ -103,6 +110,22 @@ def validate_workflow(api: dict, knowledge: Knowledge) -> list[ValidationIssue]:
                     issues.append(ValidationIssue(
                         node_id, cls, name, "bad_link",
                         f"连线引用的节点 {src_id} 不存在"))
+                elif graph_types is not None and src_id != node_id:
+                    # 连线类型校验：源槽位输出类型 vs 本输入期望类型。
+                    # 合成期有同类检查（synth/validate_graph），这里补齐通用
+                    # 管线（模板/加载/转换的工作流）——类型不匹配以前只能
+                    # 等服务器端报错。
+                    got = graph_types.output_type(src_id, val[1])
+                    want = graph_types.input_type(node_id, name)
+                    if got is None:
+                        issues.append(ValidationIssue(
+                            node_id, cls, name, "bad_link",
+                            f"源节点 {src_id} 无输出槽 {val[1]}"))
+                    elif want and got != want:
+                        issues.append(ValidationIssue(
+                            node_id, cls, name, "type_mismatch",
+                            f"{name} 需要 {want}，但 {src_id}[{val[1]}] "
+                            f"输出 {got}"))
                 continue
 
             # 标量校验

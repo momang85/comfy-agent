@@ -47,8 +47,12 @@ class T2I(Template):
                   "高", minv=256, maxv=2048,
                   desc="同宽：SDXL 建议 1024 簇"),
             Param("batch", "int", 1, "张数", minv=1, maxv=8),
-            Param("steps", "int", 24, "步数", minv=4, maxv=60),
-            Param("cfg", "float", 7.0, "CFG", minv=1.0, maxv=15.0),
+            Param("steps", "int", 30 if self.family == "sdxl" else 24,
+                  "步数", minv=4, maxv=60,
+                  desc="SDXL 25-35 / SD1.5 20-30 为社区常用区间"),
+            Param("cfg", "float", 5.5 if self.family == "sdxl" else 7.0,
+                  "CFG", minv=1.0, maxv=15.0,
+                  desc="SDXL 4-7 / SD1.5 6-8；过高会过饱和"),
             Param("seed", "int", 0, "种子(0=随机)", minv=0),
             Param("sampler", "choice", "dpmpp_2m", "采样器",
                   choices=["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde",
@@ -57,6 +61,13 @@ class T2I(Template):
                   choices=["karras", "simple", "beta", "normal",
                            "exponential", "sgm_uniform", "ddim_uniform"],
                   desc="karras 配 dpmpp_2m 是 SDXL/SD1.5 社区常用组合"),
+            Param("hires", "choice", 0, "高清修复",
+                  choices=[0, 1.5, 2.0],
+                  desc="潜空间二次放大重采样（0=关；1.5/2.0 倍，零模型依赖，"
+                       "市场级工作流标配：二段 denoise 0.4 增加细节）"),
+            Param("style_prompt", "str", "", "风格提示词（可选）",
+                  desc="独立编码并与主体条件合并（各自独立 77 token 预算；"
+                       "放风格/光影/镜头描述，绕开长提示词截断）"),
             Param("ckpt", "str", self.ckpt, "模型"),
         ]
 
@@ -64,7 +75,8 @@ class T2I(Template):
         q = self._fill_defaults(p, self.params())
         ckpt = q.get("ckpt") or self.ckpt
         seed = q["seed"] or _rand_seed()
-        return {
+        hires = float(q.get("hires") or 0) or 1.0
+        wf = {
             "1": {"class_type": "CheckpointLoaderSimple",
                   "inputs": {"ckpt_name": ckpt},
                   "_meta": {"title": "加载模型"}},
@@ -73,15 +85,43 @@ class T2I(Template):
             "4": {"class_type": "EmptyLatentImage", "inputs": {
                 "width": q["width"], "height": q["height"],
                 "batch_size": q["batch"]}},
-            "5": ksampler(["1", 0], ["2", 0], ["3", 0], ["4", 0],
-                          seed=seed, steps=q["steps"], cfg=q["cfg"],
-                          sampler=q["sampler"], scheduler=q["scheduler"],
-                          denoise=1.0),
-            "6": {"class_type": "VAEDecode", "inputs": {
-                "samples": ["5", 0], "vae": ["1", 2]}},
-            "7": {"class_type": "SaveImage", "inputs": {
-                "images": ["6", 0], "filename_prefix": "agent_t2i"}},
         }
+        positive = ["2", 0]
+        if str(q.get("style_prompt") or "").strip():
+            # 风格/光影提示词独立编码再合并：每个编码器各有一份 token 预算
+            wf["2b"] = clip_text_encode(["1", 1], q["style_prompt"])
+            wf["2c"] = {"class_type": "ConditioningCombine", "inputs": {
+                "conditioning_1": ["2", 0], "conditioning_2": ["2b", 0]}}
+            positive = ["2c", 0]
+        wf["5"] = ksampler(["1", 0], positive, ["3", 0], ["4", 0],
+                           seed=seed, steps=q["steps"], cfg=q["cfg"],
+                           sampler=q["sampler"], scheduler=q["scheduler"],
+                           denoise=1.0)
+        decode_src = "5"
+        if hires > 1:
+            # hiresfix：潜空间放大 → 二段低 denoise 重采样（复用同一模型）
+            wf["6"] = {"class_type": "LatentUpscaleBy", "inputs": {
+                "samples": ["5", 0], "upscale_method": "bicubic",
+                "scale_by": hires}}
+            wf["7"] = ksampler(["1", 0], positive, ["3", 0], ["6", 0],
+                               seed=seed, steps=max(8, round(q["steps"] * 0.6)),
+                               cfg=q["cfg"], sampler=q["sampler"],
+                               scheduler=q["scheduler"], denoise=0.4)
+            decode_src = "7"
+        out_w = int(q["width"] * hires)
+        out_h = int(q["height"] * hires)
+        # 大图解码用 tiled VAE（12GB 上 >1024² 的解码 OOM 是最常见故障）
+        if hires > 1 or max(out_w, out_h) > 1536:
+            wf["8"] = {"class_type": "VAEDecodeTiled", "inputs": {
+                "samples": [decode_src, 0], "vae": ["1", 2],
+                "tile_size": 512, "overlap": 64,
+                "temporal_size": 64, "temporal_overlap": 8}}
+        else:
+            wf["8"] = {"class_type": "VAEDecode", "inputs": {
+                "samples": [decode_src, 0], "vae": ["1", 2]}}
+        wf["9"] = {"class_type": "SaveImage", "inputs": {
+            "images": ["8", 0], "filename_prefix": "agent_t2i"}}
+        return wf
 
 
 class I2I(T2I):
@@ -103,7 +143,8 @@ class I2I(T2I):
                   desc="低=贴近原图，高=更听提示词"),
             Param("resize_mode", "choice", "justify", "缩放模式",
                   choices=["justify", "center", "disabled"]),
-        ] + [p for p in base if p.name not in ("width", "height")]
+        ] + [p for p in base
+             if p.name not in ("width", "height", "hires", "style_prompt")]
 
     def render(self, p: dict):
         q = self._fill_defaults(p, self.params())
@@ -241,7 +282,8 @@ class UpscalePass(Template):
             Param("denoise", "float", 0.45, "重绘幅度", minv=0.15, maxv=0.6,
                   desc="低=保真，高=更多细节重绘"),
             Param("steps", "int", 20, "步数", minv=8, maxv=40),
-            Param("cfg", "float", 7.0, "CFG", minv=1.0, maxv=12.0),
+            Param("cfg", "float", 5.5, "CFG", minv=1.0, maxv=12.0,
+                  desc="SDXL 4-7 区间"),
             Param("seed", "int", 0, "种子(0=随机)"),
             Param("sampler", "choice", "dpmpp_2m", "采样器",
                   choices=["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde",
@@ -276,8 +318,10 @@ class UpscalePass(Template):
                           seed=seed, steps=q["steps"], cfg=q["cfg"],
                           sampler=q["sampler"], scheduler=q["scheduler"],
                           denoise=q["denoise"]),
-            "8": {"class_type": "VAEDecode", "inputs": {
-                "samples": ["7", 0], "vae": ["3", 2]}},
+            "8": {"class_type": "VAEDecodeTiled", "inputs": {
+                "samples": ["7", 0], "vae": ["3", 2],
+                "tile_size": 512, "overlap": 64,
+                "temporal_size": 64, "temporal_overlap": 8}},
             "9": {"class_type": "SaveImage", "inputs": {
                 "images": ["8", 0], "filename_prefix": "agent_upscale"}},
         }
@@ -288,5 +332,77 @@ def _rand_seed():
     return secrets.randbelow(2**31 - 1) + 1
 
 
+class Inpaint(Template):
+    """局部重绘：原图+遮罩，只重绘遮罩区域（原生 inpaint，零额外模型）。
+
+    对应能力索引的 local_inpaint：VAEEncodeForInpaint + 遮罩限定采样。
+    遮罩图白色=重绘区域（LoadImage 的 MASK 槽按亮度取遮罩）。"""
+    id = "inpaint"
+    name = "局部重绘"
+    category = "image"
+    desc = "原图+遮罩图，只重绘遮罩区域（去物/修局部/补细节，零额外模型）"
+    est_vram_gb = 7.0
+    est_minutes = "1-2"
+
+    def __init__(self, ckpt: str = SDXL_CKPT):
+        self.ckpt = ckpt
+        self.family = "sdxl" if "xl" in ckpt.lower() else "sd15"
+        self.models_used = [ckpt]
+
+    def params(self):
+        return [
+            Param("image", "image", "", "原图", required=True),
+            Param("mask", "image", "", "遮罩图（白色=重绘区域）", required=True,
+                  desc="黑底白块的 PNG；可用画图/PS 生成"),
+            Param("prompt", "str", "", "重绘区域的新内容描述", required=True,
+                  desc="只描述遮罩区域里要出现什么，不描述整图"),
+            Param("negative", "str",
+                  NEG_SDXL if self.family == "sdxl" else NEG_SD,
+                  "负面提示词"),
+            Param("denoise", "float", 0.6, "重绘幅度", minv=0.2, maxv=1.0,
+                  desc="0.5-0.7 常用；过高遮罩边缘融合变差"),
+            Param("grow_mask_by", "int", 6, "遮罩外扩像素", minv=0, maxv=64,
+                  desc="外扩让边缘过渡更自然"),
+            Param("steps", "int", 20, "步数", minv=8, maxv=40),
+            Param("cfg", "float", 5.5 if self.family == "sdxl" else 7.0,
+                  "CFG", minv=1.0, maxv=12.0),
+            Param("seed", "int", 0, "种子(0=随机)"),
+            Param("sampler", "choice", "dpmpp_2m", "采样器",
+                  choices=["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde",
+                           "dpmpp_3m_sde", "ddim", "uni_pc"]),
+            Param("scheduler", "choice", "karras", "调度器",
+                  choices=["karras", "simple", "beta", "normal",
+                           "exponential", "sgm_uniform", "ddim_uniform"]),
+            Param("ckpt", "str", self.ckpt, "模型"),
+        ]
+
+    def render(self, p: dict):
+        q = self._fill_defaults(p, self.params())
+        seed = q["seed"] or _rand_seed()
+        return {
+            "1": {"class_type": "LoadImage",
+                  "inputs": {"image": q["image"] or "example.png"}},
+            "2": {"class_type": "LoadImage",
+                  "inputs": {"image": q["mask"] or "mask.png"}},
+            "3": {"class_type": "CheckpointLoaderSimple",
+                  "inputs": {"ckpt_name": q["ckpt"]}},
+            "4": clip_text_encode(["3", 1], q["prompt"]),
+            "5": clip_text_encode(["3", 1], q["negative"] or ""),
+            "6": {"class_type": "VAEEncodeForInpaint", "inputs": {
+                "pixels": ["1", 0], "vae": ["3", 2], "mask": ["2", 1],
+                "grow_mask_by": q["grow_mask_by"]}},
+            "7": ksampler(["3", 0], ["4", 0], ["5", 0], ["6", 0],
+                          seed=seed, steps=q["steps"], cfg=q["cfg"],
+                          sampler=q["sampler"], scheduler=q["scheduler"],
+                          denoise=q["denoise"]),
+            "8": {"class_type": "VAEDecodeTiled", "inputs": {
+                "samples": ["7", 0], "vae": ["3", 2],
+                "tile_size": 512, "overlap": 64,
+                "temporal_size": 64, "temporal_overlap": 8}},
+            "9": {"class_type": "SaveImage", "inputs": {
+                "images": ["8", 0], "filename_prefix": "agent_inpaint"}},
+        }
+
+
 TEMPLATES_IMAGE = [T2I(SDXL_CKPT), T2I(SD15_CKPT), I2I(SDXL_CKPT),
-                   StyleTransfer(), UpscalePass()]
+                   StyleTransfer(), UpscalePass(), Inpaint(SDXL_CKPT)]

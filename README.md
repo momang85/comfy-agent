@@ -91,17 +91,30 @@ python -m brain "画一只赛博朋克橘猫，1024x1024，4张"   # 一次性�
 - **能用别的 LLM 吗？** 任意 OpenAI 兼容服务（DeepSeek/Kimi/OpenAI/本地 Ollama）都行，⚙ 面板改 base_url 与模型名，保存即热生效。
 - **连朋友机器上的 ComfyUI 可以吗？** 默认只连本机 127.0.0.1（SSRF 防护）；确有需要设 `COMFY_ALLOW_LAN=1` 再改 `COMFY_URL`。
 
-## 模板库（7个，图像模板自动适配本机 checkpoint）
+## 模板库（图像模板自动适配本机 checkpoint）
 
 | ID | 名称 | 模型 | 来源 |
 |---|---|---|---|
-| t2i | 文生图(默认SDXL) | 任意 SDXL（自动适配） | 手写 |
+| t2i | 文生图(默认SDXL) | 任意 SDXL（自动适配）；支持 hires 潜空间二段放大、style_prompt 独立编码 | 手写 |
 | t2i | 文生图(轻量) | 任意 SD1.5（ckpt 参数切换） | 手写 |
 | i2i | 图生图 | 任意 SDXL（自动适配） | 对齐用户已验证工作流 |
 | style_transfer | 风格转绘 | 任意 SDXL+ControlNet | 对齐用户已验证工作流 |
+| upscale_pass | 高清放大 | 任意 SDXL + tiled VAE | 管线拼接用 |
+| inpaint | 局部重绘 | 原图+遮罩（零额外模型） | 手写 |
 | minimax_t2v | 文生视频 | MiniMax H3+Qwen3VL+turbo | 从本机节点签名构建 |
 | minimax_i2v | 图生视频 | 同上+首帧 | 同上 |
 | ltx_i2v | 图生视频 | LTX-2.3+本地Gemma | 对齐用户12GB优化工作流 |
+| merge_videos / extract_frame | 视频拼接/取末帧 | VHS | 多段续接用 |
+
+## 诊断与能力索引
+
+```bash
+python -m comfy_agent.cli health         # 连线健康审计：全部模板+能力骨架逐图校验（含连线类型）、1527 节点端口类型覆盖率、能力可用性
+python -m comfy_agent.cli capabilities   # 能力→节点审计表（节点+模型双重核验，自动降级建议）
+```
+
+- 大脑系统提示内置"能力→节点偏好"表（运行时按本机节点与模型核验）：修脸/锁姿势/锁构图/放大/局部重绘等 13 项能力，每项标注本机可用链路或降级路线
+- 提示词体系：`brain/skills/prompts.md` 分块结构+词库（图像八段式、MiniMax H3 官方字段式视频脚本）；引擎侧分块覆盖体检 + 负面词保底合并（只补不删）
 
 ## 抓住的三个空白点（对应市场调研报告）
 

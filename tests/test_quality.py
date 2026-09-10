@@ -17,6 +17,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from tests.test_synth import SNAPSHOT  # noqa: E402
+from comfy_agent.knowledge import Knowledge  # noqa: E402
+from comfy_agent.validate import validate_workflow  # noqa: E402
 
 
 def _k(checkpoints, snapshot=None):
@@ -186,6 +188,40 @@ class TestSchedulerAndCompose(unittest.TestCase):
         wf = t.render({"prompt": "1cat"})
         self.assertEqual(wf["5"]["inputs"]["scheduler"], "karras")
 
+    def test_hires_chain(self):
+        """hires=1.5 时：潜空间放大 + 二段低 denoise + tiled 解码。"""
+        from comfy_agent.templates.image import T2I, SDXL_CKPT
+        wf = T2I(SDXL_CKPT).render({"prompt": "1cat", "hires": 1.5})
+        self.assertIn("LatentUpscaleBy", {n["class_type"] for n in wf.values()})
+        self.assertEqual(wf["7"]["inputs"]["denoise"], 0.4)
+        self.assertEqual(wf["7"]["inputs"]["latent_image"], ["6", 0])
+        self.assertEqual(wf["8"]["class_type"], "VAEDecodeTiled")
+
+    def test_no_hires_plain_decode(self):
+        from comfy_agent.templates.image import T2I, SDXL_CKPT
+        wf = T2I(SDXL_CKPT).render({"prompt": "1cat"})
+        self.assertEqual(wf["8"]["class_type"], "VAEDecode")
+        self.assertNotIn("6", wf)
+
+    def test_style_prompt_split_conditioning(self):
+        """style_prompt 独立编码 + ConditioningCombine（绕开 77 token 截断）。"""
+        from comfy_agent.templates.image import T2I, SDXL_CKPT
+        wf = T2I(SDXL_CKPT).render({"prompt": "1cat",
+                                    "style_prompt": "golden hour, rim light"})
+        self.assertEqual(wf["2c"]["class_type"], "ConditioningCombine")
+        self.assertEqual(wf["5"]["inputs"]["positive"], ["2c", 0])
+
+    def test_inpaint_template_renders(self):
+        from comfy_agent.templates import get_template
+        t = get_template("inpaint")
+        self.assertIsNotNone(t)
+        wf = t.render({"image": "in.png", "mask": "m.png", "prompt": "clean bg"})
+        classes = {n["class_type"] for n in wf.values()}
+        self.assertIn("VAEEncodeForInpaint", classes)
+        issues = [i for i in validate_workflow(wf, _k([]))
+                  if i.kind in ("missing_node", "bad_link", "type_mismatch")]
+        self.assertEqual(issues, [])
+
     def test_compose_dedupes_shared_loader(self):
         from comfy_agent.synth.compose import compose
         from comfy_agent.templates.image import T2I, UpscalePass, SDXL_CKPT
@@ -200,6 +236,74 @@ class TestSchedulerAndCompose(unittest.TestCase):
         issues = [i for i in validate_workflow(merged, _k([SDXL_CKPT]))
                   if i.kind in ("bad_link", "missing_node")]
         self.assertEqual(issues, [])
+
+
+class TestBlockCoverage(unittest.TestCase):
+    def test_missing_blocks_reported(self):
+        from comfy_agent.promptspec import block_coverage
+        cov = block_coverage("sdxl", "masterpiece, 1girl, sitting")
+        self.assertIn("lighting", cov["missing"])
+        self.assertTrue(cov["suggest"]["lighting"])
+
+    def test_full_prompt_covers_all(self):
+        from comfy_agent.promptspec import block_coverage
+        p = ("masterpiece, 1girl, detailed eyes, sitting, cafe, golden hour, "
+             "cozy atmosphere, portrait, anime style")
+        cov = block_coverage("sdxl", p)
+        self.assertEqual(cov["missing"], [])
+
+    def test_check_prompt_warns_incomplete(self):
+        from comfy_agent.promptspec import check_prompt
+        chk = check_prompt("sdxl", "1girl, sitting", "")
+        self.assertTrue(any("维度不完整" in w for w in chk["warnings"]))
+
+
+class TestNodePrefs(unittest.TestCase):
+    def test_canny_available(self):
+        from comfy_agent.nodes_prefs import resolve, CAPABILITIES
+        cap = next(c for c in CAPABILITIES if c["id"] == "composition_lock")
+        k = Knowledge(SNAPSHOT, {}, {"controlnet":
+                                     ["controlnet++_union_sdxl_promax.safetensors"]})
+        r = resolve(k, cap)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["class"], "Canny")
+
+    def test_face_detailer_degrades(self):
+        from comfy_agent.nodes_prefs import resolve, CAPABILITIES
+        cap = next(c for c in CAPABILITIES if c["id"] == "face_fix")
+        r = resolve(_k([]), cap)          # 无 face_yolov8m 模型
+        self.assertFalse(r["ok"])
+        self.assertIn("fallback", r)
+
+    def test_summary_compact(self):
+        from comfy_agent.nodes_prefs import capability_summary
+        s = capability_summary(_k([]))
+        self.assertIn("修脸", s)
+        self.assertLessEqual(len(s.splitlines()), 15)
+
+
+class TestTypeMismatch(unittest.TestCase):
+    def test_wrong_type_link_flagged(self):
+        """通用管线现在也查连线类型：IMAGE 输出接 MODEL 输入必须被拦。"""
+        bad = {
+            "1": {"class_type": "LoadImage", "inputs": {"image": "a.png"}},
+            "2": {"class_type": "CheckpointLoaderSimple",
+                  "inputs": {"ckpt_name": "m1.safetensors"}},
+            "3": {"class_type": "KSampler", "inputs": {
+                "model": ["1", 0],          # IMAGE 接 MODEL：类型错误
+                "positive": ["4", 0], "negative": ["4", 0],
+                "latent_image": ["5", 0], "seed": 0, "steps": 20,
+                "cfg": 7.0, "sampler_name": "euler", "scheduler": "simple",
+                "denoise": 1.0}},
+            "4": {"class_type": "CLIPTextEncode",
+                  "inputs": {"text": "x", "clip": ["2", 1]}},
+            "5": {"class_type": "EmptyLatentImage",
+                  "inputs": {"width": 512, "height": 512, "batch_size": 1}},
+        }
+        issues = [i for i in validate_workflow(bad, _k([]))
+                  if i.kind == "type_mismatch"]
+        self.assertTrue(issues)
+        self.assertIn("MODEL", issues[0].message)
 
 
 if __name__ == "__main__":

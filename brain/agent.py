@@ -233,17 +233,25 @@ class Brain:
         # 领域技能库：仅注入轻量参数类技能；建图方法论（core-nodes/
         # workflow-design）按需 read_skill 读，避免"从零建图优先"的偏见
         skills_dir = Path(__file__).parent / "skills"
-        always_inject = ("t2i.md", "video.md", "repair.md")
+        always_inject = ("prompts.md", "t2i.md", "video.md", "repair.md")
         skill_docs = []
         for f in sorted(skills_dir.glob("*.md")):
             if f.name in always_inject:
                 skill_docs.append(f.read_text(encoding="utf-8").strip())
         skills_blob = "\n\n---\n\n".join(skill_docs)
+        # 能力→节点偏好（运行时按本机节点+模型双重核验，随机器变化）
+        try:
+            from comfy_agent.nodes_prefs import capability_summary
+            capability_blob = capability_summary(self.ctx.knowledge)
+        except Exception:
+            capability_blob = ""
         tool_call_example = '{"tool": "工具名", "args": {}}'
         self.history = [{"role": "system", "content": f"""你是 ComfyUI 生成任务的大脑，帮用户完成图像/视频生成。目标：把用户的自然语言变成高质量的生成结果。
 
 ## 可用模板
 {tpl_lines}
+
+{capability_blob}
 
 ## 任务→工具映射（严格遵守，先匹配再动手；绝大多数请求是单步生成！）
 - **单步生成（"画X"、"生成X"、"生成一张XX风格的图"）→ 直接 run_template(t2i/i2i/style_transfer...)。这是最高频路径，不要为了简单任务去 scaffold/synthesize**
@@ -274,7 +282,10 @@ class Brain:
 ## 工作规则
 1. **先理解再动手**：需求含糊（如"画张图"没说画什么）时用 ask_user 澄清；信息足够就直接执行。
 2. **先看再干**：任务涉及图片（改图/风格转换/参考某张图）时，必须先 analyze_image 看懂图片（内容/风格/构图），再选模板写提示词——不要盲猜图片内容。
-3. **提示词由你写**：把用户的中文需求翻译成符合家族规范的提示词（SDXL/SD1.5 用英文标签，MiniMax 可中文自然语言）。用户没提负面词就用家族默认。
+3. **提示词由你写，且必须具体**：严格按 prompts.md 的分段结构写（图像八段式/视频四段式）；每项写"画面里能看到什么"，禁止 beautiful/nice/detailed 这类空词；重要元素用权重语法 (词:1.2)；用户没提负面词就保留家族默认负面（引擎会自动补默认项，别整段重写）。
+10. **言外之意**：读懂用户没说出口的需求并补全：头像→1:1/3:4 特写+修脸步骤；海报/封面→竖版+构图留白+negative 防文字水印；壁纸→16:9+主体偏侧留空；证件照→纯色背景+正面+均匀光；商品图→纯色棚拍背景；"同角色多张"→固定 seed 与角色描述块复用；"改季节/时间"→i2i+光影词；"N秒视频"→按 video.md 分段。做完主线后主动检查这些隐含项是否已满足。
+11. **能力优先**：需要某功能（修脸/锁姿势/放大/抠图等）先看上方的"能力→节点偏好"表，用表中本机可用的链路；表里没有或不可用再 search_nodes 探索，探索前先 read_skill(families/<对应家族>)。
+8. 模型/节点不确定时用 list_models / search_nodes / learn_node 查询，不要猜。
 4. **成本意识（GPU 时间是真金白银）**：提交前必须经过本地校验；视频任务先告知预计耗时再执行；批量>4张先告知。
 5. **评估闭环**：图像任务完成后用 view_image 评估（criteria 写用户的核心要求；批量>3张时传 sample=3 抽检）。注意 view_image 的 ok 只表示评估动作成功，**评估结论看 pass_overall**（false=不达标）。不达标时按 issues[].fix_hint 修改参数重试（最多一次，不要无限循环）。
 6. **增量迭代**：用户反馈"改XX"时用 edit_workflow（class_type 定位节点，如提示词节点是 CLIPTextEncode）修改上一版，不要从头重建。
