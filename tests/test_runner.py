@@ -187,5 +187,51 @@ class TestForcedVideoEvaluation(unittest.TestCase):
         self.assertIn("error", result["evaluation"])
 
 
+class TestForcedImageEvaluation(unittest.TestCase):
+    """图像产物强制评估（引擎层保底：轻量大脑常跳过 view_image）。"""
+
+    def test_image_output_triggers_evaluation(self):
+        from comfy_agent import runner as R
+        outs = [{"filename": "i.png", "type": "output", "local_path": "x/i.png"}]
+        fake_eval = mock.Mock()
+        fake_eval.to_dict.return_value = {"tier0": [], "ok": True, "vlm": [
+            {"pass": True, "score": 9, "issues": [], "image": "x/i.png"}]}
+        result = {"ok": True}
+        with mock.patch("comfy_agent.runner.config.EVAL_POLICY", "auto"), \
+             mock.patch("brain.eval.evaluate", return_value=fake_eval) as ev_fn, \
+             mock.patch("brain.events.emit") as em:
+            R._force_image_evaluation(result, outs)
+        self.assertTrue(ev_fn.called)
+        self.assertIn("evaluation", result)
+        self.assertEqual(result["evaluation"]["verdict"], True)
+        self.assertEqual(em.call_args[0][1]["kind"], "image_forced")
+
+    def test_video_only_no_image_eval(self):
+        from comfy_agent import runner as R
+        result = {"ok": True}
+        with mock.patch("comfy_agent.runner.config.EVAL_POLICY", "auto"), \
+             mock.patch("brain.eval.evaluate") as ev_fn:
+            R._force_image_evaluation(result, [{"local_path": "x/v.mp4"}])
+        self.assertFalse(ev_fn.called)
+        self.assertNotIn("evaluation", result)
+
+    def test_image_policy_off_skips(self):
+        from comfy_agent import runner as R
+        result = {"ok": True}
+        with mock.patch("comfy_agent.runner.config.EVAL_POLICY", "off"), \
+             mock.patch("brain.eval.evaluate") as ev_fn:
+            R._force_image_evaluation(result, [{"local_path": "x/i.png"}])
+        self.assertFalse(ev_fn.called)
+
+    def test_eval_exception_does_not_break_delivery(self):
+        from comfy_agent import runner as R
+        result = {"ok": True}
+        with mock.patch("comfy_agent.runner.config.EVAL_POLICY", "auto"), \
+             mock.patch("brain.eval.evaluate",
+                        side_effect=RuntimeError("VLM 炸了")):
+            R._force_image_evaluation(result, [{"local_path": "x/i.png"}])
+        self.assertIn("error", result["evaluation"])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

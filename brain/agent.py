@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 
 from .llm import LLMClient, LLMError
 from .tools import ToolContext, execute_tool, tools_schema_for_llm
@@ -121,7 +122,7 @@ class Brain:
             ev("tool_end", {"tool": name, "ok": bool(result.get("ok", True)),
                             "summary": obs[:500]})
             if self.verbose and not result.get("ok", True):
-                self._log(f"  ↳ {obs[:160]}")
+                self._log(f"  -> {obs[:160]}")
             # 草稿变更 → 推送工作流图
             if self.ctx.draft is not None:
                 draft_now = json.dumps(self.ctx.draft, default=str)
@@ -279,7 +280,16 @@ class Brain:
 {skills_blob}"""}]
 
     def _log(self, msg: str):
-        print(msg, flush=True)
+        """安全日志：GBK 控制台遇到不可编码字符仅替换，绝不抛异常。
+
+        曾因 '↳' 这类装饰字符在 cp936 控制台抛 UnicodeEncodeError，
+        异常穿出 handle() 打死会话线程，项目永久卡在 thinking。"""
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        try:
+            print(str(msg).encode(enc, "replace").decode(enc, "replace"),
+                  flush=True)
+        except Exception:
+            pass
 
     def _compact_history(self, keep_recent: int = 16):
         """上下文压缩：历史超过 system+keep_recent 时，丢弃最旧的中间消息，

@@ -68,6 +68,10 @@ def adapt_ckpt(tpl, params: dict, knowledge) -> tuple[dict, list[str]]:
     if ckpt_param is None:
         return dict(params), []           # 视频等无 ckpt 参数的模板不参与
     params = dict(params)
+    # 空串/纯空白等同于"没指定"：模板 _fill_defaults 会把空串原样写进工作流，
+    # 导致 ckpt_name='' 校验失败且模糊匹配也给不出建议（实测踩过）
+    if "ckpt" in params and not str(params.get("ckpt") or "").strip():
+        params.pop("ckpt")
     default = ckpt_param.default or ""
     explicit = bool(params.get("ckpt"))
     current = params.get("ckpt") or default

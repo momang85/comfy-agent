@@ -133,6 +133,20 @@ class TestAdaptCkpt(unittest.TestCase):
         self.assertEqual(params["ckpt"], "my_fav_xl.safetensors")
 
 
+    def test_blank_ckpt_treated_as_unspecified(self):
+        """大脑传 ckpt="" 时不得原样写进工作流（ckpt_name='' 必校验失败）。"""
+        from comfy_agent.model_adapt import adapt_ckpt
+        k = _k(["juggernautXL_v9.safetensors"])
+        params, notes = adapt_ckpt(self.T2I(self.SDXL), {"ckpt": ""}, k)
+        self.assertEqual(params["ckpt"], "juggernautXL_v9.safetensors")
+
+    def test_blank_ckpt_default_present_drops_key(self):
+        from comfy_agent.model_adapt import adapt_ckpt
+        k = _k([self.SDXL])
+        params, notes = adapt_ckpt(self.T2I(self.SDXL), {"ckpt": "   "}, k)
+        self.assertNotIn("ckpt", params)
+
+
 class RecordingClient:
     """记录提交的工作流（复用 test_runner.FakeClient 行为）。"""
 
@@ -184,6 +198,20 @@ class TestRunTemplateIntegration(unittest.TestCase):
                          client=RecordingClient())
         self.assertEqual(r["stage"], "render_failed")
         self.assertTrue(r["missing_models"])
+
+    def test_blank_ckpt_never_renders_empty_name(self):
+        """ckpt="" 的端到端回归：工作流必须落到本机真实模型名。"""
+        from comfy_agent.runner import run_template
+        snap = copy.deepcopy(SNAPSHOT)
+        snap["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"] = \
+            [["juggernautXL_v9.safetensors"], {}]
+        k = _k(["juggernautXL_v9.safetensors"], snapshot=snap)
+        client = RecordingClient()
+        r = run_template("t2i", {"prompt": "x", "ckpt": ""},
+                         knowledge=k, client=client, wait=False)
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(client.last_wf["1"]["inputs"]["ckpt_name"],
+                         "juggernautXL_v9.safetensors")
 
 
 if __name__ == "__main__":

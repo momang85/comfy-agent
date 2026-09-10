@@ -79,6 +79,7 @@ class BrainSession:
         self.brain = Brain(verbose=True, project=project)
         self.inbox: queue.Queue = queue.Queue()
         self.stage = "idle"
+        self.last_error: str | None = None
         self.worker = threading.Thread(target=self._run, daemon=True)
         self.worker.start()
 
@@ -93,10 +94,28 @@ class BrainSession:
             else:
                 text, image = item, None
             self.stage = "thinking"
+            self.last_error = None
             # 项目上下文：本线程内所有事件自动打上 project 标签
             with project_context(self.project.id):
-                self.brain.handle(text, image=image)
-            self.stage = "idle"
+                ev.emit("stage", {"stage": "thinking", "detail": {}})
+                try:
+                    self.brain.handle(text, image=image)
+                except Exception as e:
+                    # 单条消息出错不得打死会话线程：曾因日志字符编码异常
+                    # 线程静默死亡，项目永久停在 thinking、后续消息只入队
+                    import traceback
+                    tb = traceback.format_exc()
+                    self.last_error = f"{type(e).__name__}: {e}"
+                    try:
+                        print(f"[session:{self.project.id}] {self.last_error}\n"
+                              f"{tb[-1200:]}", flush=True)
+                    except Exception:
+                        pass
+                    ev.emit("error", {"message": self.last_error,
+                                      "traceback": tb[-1200:]})
+                finally:
+                    self.stage = "idle"
+                    ev.emit("stage", {"stage": "idle", "detail": {}})
 
 
 class WebSession:
@@ -193,6 +212,7 @@ def status_snapshot(project_id: str | None) -> dict:
                             "new": (now - f.stat().st_mtime) < 86400})
     return {"ok": True, "project": bs.project.to_dict(),
             "stage": bs.stage,
+            "last_error": bs.last_error,
             "draft": ctx.draft, "draft_meta": ctx.draft_meta,
             "outputs": outputs}
 

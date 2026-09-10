@@ -112,7 +112,7 @@ for o in get("/api/status")["outputs"][:2]:
 
 # 6) 清理检查：项目源码目录无 friend 数据写入
 assert not (PROJ / "settings.json").exists()
-print("[6] 项目目录未被写入任何 friend 配置 ✓")
+print("[6] 项目目录未被写入任何 friend 配置 [OK]")
 
 # 7) 模型自动适配仿真：朋友设备没有开发机的默认模型（novaAnimeXL），
 #    只有一个任意 SD1.5 模型 -> t2i 应自动绑定它并收敛分辨率到 512
@@ -130,12 +130,12 @@ assert params.get("ckpt") == "anything-v5-PrtRE.safetensors", params
 assert params.get("width") == 512 and params.get("height") == 512, params
 assert notes and "自动适配" in notes[0], notes
 print(f"[7] 缺 novaAnimeXL 的设备：t2i 自动适配为 {params['ckpt']}"
-      f"（分辨率收敛 512）✓")
+      f"（分辨率收敛 512）[OK]")
 
 # 8) model_prefs 经前端设置接口保存（朋友指定自己的偏好模型）
 post("/api/settings", {"model_prefs": {"sd15": "anything-v5-PrtRE.safetensors"}})
 s = config.load_user_settings()
 assert s.get("model_prefs", {}).get("sd15") == "anything-v5-PrtRE.safetensors"
-print("[8] model_prefs 经 /api/settings 保存并生效 ✓")
+print("[8] model_prefs 经 /api/settings 保存并生效 [OK]")
 
 print("\n=== Friend-mode 仿真通过：他人设备可用 ===")

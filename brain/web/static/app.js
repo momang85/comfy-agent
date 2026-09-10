@@ -412,10 +412,44 @@ function appendDelta(channel, delta) {
   if (channel === "reasoning") {
     m.root.querySelector(".rbody").textContent += delta;
   } else {
-    m.content += delta;
+    // 原始流保留在 m.raw；显示层隐藏工具调用代码块（调用本身由工具卡呈现）
+    m.raw = (m.raw || "") + delta;
+    m.content = stripToolFences(m.raw);
     m.root.querySelector(".bubble").textContent = m.content;
   }
   chatEl.scrollTop = chatEl.scrollHeight;
+}
+
+// 三反引号围栏标记（用字符码构造，避免源码出现反引号字面量）
+const FENCE = String.fromCharCode(96).repeat(3);
+const TOOL_KEY_RE = /"(tool|task|action)"\s*:/;
+
+// 隐藏流式正文里的工具调用代码块；未闭合的围栏在流式期间同样隐藏
+function stripToolFences(raw) {
+  const s = String(raw || "");
+  const out = [];
+  let last = 0;
+  for (;;) {
+    const i = s.indexOf(FENCE, last);
+    if (i < 0) break;
+    const j = s.indexOf(FENCE, i + FENCE.length);
+    out.push(s.slice(last, i));
+    if (j < 0) {                       // 未闭合：正在流式传输的工具块
+      const body = s.slice(i + FENCE.length);
+      if (TOOL_KEY_RE.test(body)) {
+        out.push("\n[已提交工具调用]");
+        return out.join("");
+      }
+      out.push(body);
+      return out.join("");
+    }
+    const body = s.slice(i + FENCE.length, j);
+    out.push(TOOL_KEY_RE.test(body) ? "\n[已提交工具调用]\n"
+                                    : s.slice(i, j + FENCE.length));
+    last = j + FENCE.length;
+  }
+  out.push(s.slice(last));
+  return out.join("");
 }
 
 function addToolCard(tool, args, ok, summary, done = true) {
@@ -425,8 +459,10 @@ function addToolCard(tool, args, ok, summary, done = true) {
     for (let i = cards.length - 1; i >= 0; i--) {
       if (cards[i].dataset.tool === tool && !cards[i].dataset.done) {
         if (summary) {
-          cards[i].querySelector(".sum").textContent =
-            escapeHtml(summary || JSON.stringify(args || {}).slice(0, 140));
+          // 文本节点赋值不做 HTML 转义（转义只用于 innerHTML 路径，
+          // 否则卡片正文会显示 &quot; 这类实体）
+          const body = summary || String(JSON.stringify(args || {})).slice(0, 140);
+          cards[i].querySelector(".sum").textContent = body;
         }
         if (!ok) cards[i].classList.add("fail");
         cards[i].dataset.done = "1";
@@ -451,6 +487,38 @@ function escapeHtml(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+// 大脑出错卡片（线程兜底事件）：会话仍可用，提示用户可继续发消息
+function addErrorCard(message, traceback) {
+  const d = document.createElement("div");
+  d.className = "toolcard fail";
+  d.dataset.tool = "__error__";
+  d.dataset.done = "1";
+  const t = document.createElement("div");
+  t.className = "t";
+  t.textContent = "⚠ 大脑出错（会话已恢复，可继续发消息）";
+  const s = document.createElement("div");
+  s.className = "sum";
+  s.style.whiteSpace = "pre-wrap";
+  s.textContent = String(message || "未知错误");
+  d.appendChild(t);
+  d.appendChild(s);
+  if (traceback) {
+    const det = document.createElement("details");
+    const sm = document.createElement("summary");
+    sm.textContent = "技术细节";
+    const pre = document.createElement("div");
+    pre.className = "sum";
+    pre.style.whiteSpace = "pre-wrap";
+    pre.textContent = String(traceback).slice(-800);
+    det.appendChild(sm);
+    det.appendChild(pre);
+    d.appendChild(det);
+  }
+  chatEl.appendChild(d);
+  chatEl.scrollTop = chatEl.scrollHeight;
+  currentMsg = null;
+}
+
 // ---------- 顶栏 ----------
 const STAGE_FLOW = ["validate", "repair", "submit", "run", "download", "evaluate"];
 function setStage(stage, failed) {
@@ -462,7 +530,9 @@ function setStage(stage, failed) {
     el.classList.toggle("done", i < cur);
   });
   statusEl.textContent = stage === "idle" ? "空闲" :
-    stage === "completed" ? "完成" : `阶段: ${stage}`;
+    stage === "completed" ? "完成" :
+    stage === "thinking" ? "构建中…" :
+    stage === "error" ? "出错" : `阶段: ${stage}`;
   if (stage === "completed") {
     document.querySelectorAll(".stage").forEach((el) => el.classList.add("done"));
   }
@@ -523,6 +593,11 @@ function handleEvent(msg) {
     case "tool_end":
       addToolCard(data.tool, null, data.ok, data.summary, true);
       break;
+    case "error":
+      // 会话线程兜底事件：显示错误并复位阶段（不再永久停在"构建中"）
+      addErrorCard(data.message, data.traceback);
+      setStage("error", true);
+      break;
     case "workflow_update":
       renderGraph(data.graph);
       break;
@@ -544,12 +619,19 @@ function handleEvent(msg) {
       addEvalCard(data);
       setStage("evaluate", data.verdict === false);
       break;
-    case "delivery":
-      addMsg("ai", data.text || "");
+    case "delivery": {
+      // 最终回复已随流式内容显示时不再重复气泡（否则同一段话出现两次）
+      const ais = chatEl.querySelectorAll(".msg.ai .bubble");
+      const lastText = ais.length
+        ? ais[ais.length - 1].textContent.trim() : "";
+      if (!lastText || lastText !== String(data.text || "").trim()) {
+        addMsg("ai", data.text || "");
+      }
       currentMsg = null;
       setStage("completed");
       refreshGallery();   // 新产物自动出现（无需手动刷新页面）
       break;
+    }
     case "skill_remembered":
       addMemoryBadge(`${data.task} → ${data.result}`);
       break;

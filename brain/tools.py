@@ -275,13 +275,39 @@ def tool_edit_workflow(ctx: ToolContext, args: dict) -> dict:
             "validation_issues": [i.to_dict() for i in issues][:8]}
 
 
+def _resolve_upload(ctx: ToolContext, raw: str) -> Path:
+    """图片路径解析：精确不存在时在本项目 uploads/ 内按相似度纠错。
+
+    轻量模型常把上传文件名抄错一两个字符（实测丢字符导致"图片不存在"），
+    相似度足够高时自动纠正，避免整轮任务因路径笔误中断。"""
+    p = Path(raw)
+    if p.exists():
+        return p
+    try:
+        from difflib import SequenceMatcher
+        base = p.name.lower()
+        best, score = None, 0.0
+        for f in ctx.project.uploads_dir().glob("*"):
+            if not f.is_file():
+                continue
+            s = SequenceMatcher(None, base, f.name.lower()).ratio()
+            if s > score:
+                best, score = f, s
+        if best is not None and score >= 0.75:
+            return best
+    except Exception:
+        pass
+    return p
+
+
 def tool_analyze_image(ctx: ToolContext, args: dict) -> dict:
     """分析用户图片（先看再干）：内容/风格/配色/构图+推荐模板与提示词。
     args: {path: 本地图片路径}"""
     from .llm import VLMClient, LLMError
-    p = Path(args.get("path", ""))
+    raw = str(args.get("path", ""))
+    p = _resolve_upload(ctx, raw)
     if not p.exists():
-        return {"ok": False, "error": f"图片不存在: {p}"}
+        return {"ok": False, "error": f"图片不存在: {raw}"}
     try:
         vlm = VLMClient()
         if not vlm.ready:
@@ -289,7 +315,12 @@ def tool_analyze_image(ctx: ToolContext, args: dict) -> dict:
         analysis = vlm.analyze_image_json(p)
         return {"ok": True, "path": str(p), **analysis}
     except LLMError as e:
-        return {"ok": False, "error": str(e)[:200]}
+        msg = str(e)
+        if "contentFilter" in msg or "1301" in msg:
+            return {"ok": False,
+                    "error": "图片被服务商内容安全策略拦截，视觉模型无法分析。"
+                             "可改用文字描述画面内容，或更换图片后重试。"}
+        return {"ok": False, "error": msg[:200]}
 
 
 def tool_run_template(ctx: ToolContext, args: dict) -> dict:

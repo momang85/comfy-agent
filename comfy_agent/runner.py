@@ -160,12 +160,53 @@ def run_workflow(workflow_api: dict, *, source: str = "workflow",
     result.update({"stage": "completed", "ok": True,
                    "outputs": outs, "output_dir": str(out_dir)})
 
-    # ---- stage6: 视频产物强制评估（引擎层保底，不依赖大脑是否记得）----
+    # ---- stage6: 产物强制评估（引擎层保底，不依赖大脑是否记得）----
     _force_video_evaluation(result, outs)
+    _force_image_evaluation(result, outs)
     return result
 
 
 _VIDEO_EXTS = (".mp4", ".webm", ".mkv", ".mov")
+_IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
+
+
+def _force_image_evaluation(result: dict, outs: list) -> None:
+    """图像产物自动评估（EVAL_POLICY=off 时跳过；批量抽样 2 张）。
+
+    大脑本应自行调 view_image 评估，但轻量模型经常跳过（实测连续 3 个
+    出图任务都没评估），前端"评估"卡片长期空白——这里做引擎级保底，
+    与视频产物一致。"""
+    if config.EVAL_POLICY == "off":
+        return
+    images = [o.get("local_path") for o in outs
+              if o.get("local_path")
+              and str(o["local_path"]).lower().endswith(_IMAGE_EXTS)]
+    if not images:
+        return
+    try:
+        from brain.eval import evaluate
+        from brain.events import emit
+        eval_result = evaluate(images, "画面清晰完整、主体明确、无肢体或结构畸形、"
+                               "无文字水印", sample=2)
+        d = eval_result.to_dict()
+        verdict = d.pop("ok", None)
+        d["verdict"] = verdict
+        result["evaluation"] = d
+        emit("evaluation", {
+            "kind": "image_forced", "verdict": verdict,
+            "score": (d.get("vlm") or [{}])[0].get("score")
+            if d.get("vlm") else None,
+            "issues": [
+                {"location": str(i.get("image", "")).replace("\\", "/").rsplit("/", 1)[-1],
+                 "description": "；".join(
+                     x.get("description", "")
+                     for x in (i.get("issues") or [])
+                     if isinstance(x, dict))[:120]}
+                for i in d.get("vlm", []) or []
+                if i.get("pass") is False][:4],
+            "files": images})
+    except Exception as e:
+        result["evaluation"] = {"error": str(e)[:200]}
 
 
 def _force_video_evaluation(result: dict, outs: list) -> None:
@@ -208,7 +249,7 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     tpl = get_template(template_id)
     if tpl is None:
         _emit_stage("validation_failed",
-                    {"detail": {"error": f"未知模板: {template_id}"}})
+                    {"error": f"未知模板: {template_id}"})
         return {"ok": False, "stage": "render_failed",
                 "error": f"未知模板: {template_id}"}
     # 参数幻觉警告：大脑发明的参数名（duration/num_frames 等）不再被
@@ -230,7 +271,7 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
                and not (ckpt_ok and m == ckpt_default)]
     if missing:
         _emit_stage("validation_failed",
-                    {"detail": {"error": f"缺少模型: {missing}"}})
+                    {"error": f"缺少模型: {missing}"})
         return {"ok": False, "stage": "render_failed",
                 "error": f"模板 {template_id} 缺少模型: {missing}",
                 "missing_models": missing,
@@ -241,7 +282,7 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
         wf = tpl.render(params)
     except Exception as e:
         _emit_stage("validation_failed",
-                    {"detail": {"error": f"渲染失败: {e}"}})
+                    {"error": f"渲染失败: {e}"})
         return {"ok": False, "stage": "render_failed",
                 "error": f"渲染失败: {e}"}
     result = run_workflow(wf, source=f"template:{template_id}", **kw)
@@ -250,7 +291,8 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
         warnings.append(f"模板 {template_id} 不识别参数 {unknown}（已忽略）。"
                         f"支持参数: {sorted(known)}")
     for w in warnings:
-        _emit_stage("warning", {"detail": {"warning": w}})
+        # detail 只包一层：前端读的是 data.detail.warning
+        _emit_stage("warning", {"warning": w})
     if warnings:
         result.setdefault("warnings", []).extend(warnings)
     return result
