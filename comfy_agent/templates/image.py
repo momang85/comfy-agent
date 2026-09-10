@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from .base import Param, Template, ksampler, clip_text_encode
 
-SDXL_CKPT = "sdXL\\novaAnimeXL_ilV180.safetensors"
-SD15_CKPT = "sd1.5\\anything-v5.safetensors"
+SDXL_CKPT = "sdXL/novaAnimeXL_ilV180.safetensors"
+SD15_CKPT = "sd1.5/anything-v5.safetensors"
 # SD1.5 生态的通用负面嵌入（本机 embeddings 为空，用文本负面词）
 NEG_SD = ("(worst quality, low quality:1.4), bad anatomy, bad hands, "
           "extra digits, fewer digits, missing fingers, watermark, "

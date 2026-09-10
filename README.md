@@ -28,6 +28,26 @@ ComfyUI (127.0.0.1:8188，绘世启动器启动)
 
 **Linux / macOS**：设置环境变量 `COMFY_ROOT`、`LLM_API_KEY` 后 `python -m brain --web`（同端口 8899）。
 
+### 1.5 在别人的电脑上运行（可移植性）
+
+项目按"换台机器就能跑"设计，前提只有三个：
+
+| 前提 | 说明 | 不满足会怎样 |
+|---|---|---|
+| Python 3.10+ | **零第三方依赖**（纯标准库），ComfyUI 整合包自带的 python 也行 | 无法启动 |
+| ComfyUI 0.3x 已启动（`127.0.0.1:8188`） | 任何安装方式都行；模型库可以不同 | 生成失败（报"服务器连不上"） |
+| 一个 OpenAI 兼容 LLM key | 智谱/DeepSeek/Kimi/OpenAI 任一 | 大脑不出结果 |
+
+其他全部自动适配，无需改代码：
+
+- **路径零硬编码**：工作区/产物/设置都基于项目根目录推导；ComfyUI 目录经 `install.bat`（Windows）或 `COMFY_ROOT` 环境变量指定
+- **模型名自动适配**：模板默认模型（novaAnimeXL 等）本机不存在时，图像模板自动绑定你本机的同家族 checkpoint（`model_prefs` 可指定偏好）；视频模板才需要按名安装对应模型
+- **ffmpeg 可选**：仅视频抽帧评估用到，`FFMPEG_PATH` 环境变量或 PATH 里能找到即可
+- **无注册表依赖**：API key 读取链为 环境变量 → settings.json → （Windows）注册表，非 Windows 环境跳过注册表
+
+Windows 用户：`install.bat`（填一次 ComfyUI 路径）→ `一键启动.bat` → ⚙ 填 key，三步完成。
+Linux/macOS 用户：`COMFY_ROOT=/path/to/ComfyUI LLM_API_KEY=sk-... python -m brain --web`（无需 bat 脚本）。
+
 ### 2. 引擎层（无需 LLM）
 
 ```bash

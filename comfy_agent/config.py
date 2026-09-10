@@ -8,11 +8,23 @@ COMFY_URL = os.environ.get("COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
 # SSRF 防护开关：默认只允许回环地址；=1 时放行私网/公网地址（连接其他机器的 ComfyUI）
 COMFY_ALLOW_LAN = os.environ.get("COMFY_ALLOW_LAN", "0") == "1"
 
-# ---- 本机路径（秋叶整合包） ----
-COMFY_ROOT = Path(os.environ.get(
-    "COMFY_ROOT",
-    r"D:\comfiUI\ComfyUI-aki\ComfyUI-aki-v3\ComfyUI",
-))
+# ---- 本机路径（跨设备可移植：环境变量 COMFY_ROOT 优先；未设置时按平台探测）----
+def _default_comfy_root() -> str:
+    """无环境变量时的 ComfyUI 安装目录兜底。
+
+    核心生成流程走 COMFY_URL（HTTP 连 127.0.0.1:8188），本目录仅用于
+    读取 Manager 缓存（节点→包映射）等增强功能，不是硬依赖。"""
+    if os.name == "nt":
+        # Windows 整合包常见位置（install.bat/一键启动.bat 写 comfy_root.local 覆盖）
+        return r"D:\comfiUI\ComfyUI-aki\ComfyUI-aki-v3\ComfyUI"
+    for cand in ("ComfyUI", "comfyui", "ComfyUI/ComfyUI"):
+        p = Path.home() / cand
+        if p.exists():
+            return str(p)
+    return ""
+
+
+COMFY_ROOT = Path(os.environ.get("COMFY_ROOT", _default_comfy_root()))
 MODELS_DIR = COMFY_ROOT / "models"
 INPUT_DIR = COMFY_ROOT / "input"
 OUTPUT_DIR = COMFY_ROOT / "output"

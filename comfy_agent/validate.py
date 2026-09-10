@@ -135,7 +135,16 @@ def validate_workflow(api: dict, knowledge: Knowledge) -> list[ValidationIssue]:
 
             if isinstance(t, list):    # 枚举 [[choices], opts]
                 choices = [str(c) for c in t]
-                if str(val) not in choices:
+                is_file_enum = any(c.endswith(FILE_SUFFIXES) for c in choices[:3])
+                # 文件枚举对路径分隔符不敏感：Windows 清单用 \，Linux 用 /，
+                # 统一归一为 / 再比较（模型名 sdXL/nova 在两端都合法）
+                if is_file_enum:
+                    val_norm = str(val).replace("\\", "/")
+                    choices_norm = [c.replace("\\", "/") for c in choices]
+                    matched = val_norm in choices_norm
+                else:
+                    matched = str(val) in choices
+                if not matched:
                     # 文件名枚举（模型选择器）：跨家族匹配毫无意义
                     # （如把丢失的 SDXL VAE 换成 minimax 音频 VAE），
                     # 必须同家族才给建议；跨家族不匹配时留空交给结构级修复。
@@ -144,8 +153,9 @@ def validate_workflow(api: dict, knowledge: Knowledge) -> list[ValidationIssue]:
                         "LoadImage", "LoadImageMask", "LoadImageOutput")
                     if is_image_input:
                         suggestion = None
-                    elif any(c.endswith(FILE_SUFFIXES) for c in choices[:3]):
-                        suggestion = {"enum": _closest_same_family(str(val), choices)}
+                    elif is_file_enum:
+                        suggestion = {"enum": _closest_same_family(
+                            str(val).replace("\\", "/"), choices_norm)}
                     else:
                         suggestion = {"enum": _closest(str(val), choices)}
                     issues.append(ValidationIssue(

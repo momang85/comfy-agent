@@ -10,14 +10,17 @@ from pathlib import Path
 
 
 def _find_tool(name: str, env_key: str, win_default: str) -> str:
-    """查找链：环境变量 -> PATH（跨平台）-> Windows 默认位置。"""
+    """查找链：环境变量 -> PATH（跨平台）-> Windows 默认位置（仅 Windows）。"""
     env_val = os.environ.get(env_key)
     if env_val:
         return env_val
     found = shutil.which(name)
     if found:
         return found
-    return win_default
+    # 末位兜底只对 Windows 有效（整合包路径）；POSIX 交给 which 的 PATH
+    if os.name == "nt":
+        return win_default
+    return name
 
 
 FFMPEG = _find_tool("ffmpeg", "FFMPEG_PATH",
