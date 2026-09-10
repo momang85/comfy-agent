@@ -306,5 +306,40 @@ class TestTypeMismatch(unittest.TestCase):
         self.assertIn("MODEL", issues[0].message)
 
 
+class TestMultiToolCalls(unittest.TestCase):
+    """一条消息多个工具调用：全部提取、按序执行、上限 3。"""
+
+    def test_two_fences_parsed_in_order(self):
+        from brain.agent import _parse_tool_calls
+        reply = ('```json\n{"tool": "analyze_image", "args": {"path": "a.png"}}\n```\n'
+                 '```json\n{"tool": "run_template", "args": {"template_id": "t2i"}}\n```')
+        calls = _parse_tool_calls(reply)
+        self.assertEqual([c[0] for c in calls],
+                         ["analyze_image", "run_template"])
+
+    def test_limit_three(self):
+        from brain.agent import _parse_tool_calls
+        parts = [f'```json\n{{"tool": "view_image", "args": {{"n": {i}}}}}\n```'
+                 for i in range(5)]
+        self.assertEqual(len(_parse_tool_calls("\n".join(parts))), 3)
+
+    def test_bare_json_lines(self):
+        from brain.agent import _parse_tool_calls
+        calls = _parse_tool_calls(
+            '{"tool": "list_models", "args": {}}\n'
+            '{"tool": "view_image", "args": {}}')
+        self.assertEqual([c[0] for c in calls], ["list_models", "view_image"])
+
+    def test_text_fallback_single_call(self):
+        from brain.agent import _parse_tool_calls
+        calls = _parse_tool_calls("我认为应该用 run_template 来生成。")
+        self.assertEqual(calls[0][0], "run_template")
+        self.assertEqual(calls[0][1], {})
+
+    def test_no_calls_returns_empty(self):
+        from brain.agent import _parse_tool_calls
+        self.assertEqual(_parse_tool_calls("好的，已完成，无需工具。"), [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

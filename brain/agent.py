@@ -78,64 +78,66 @@ class Brain:
             reply = self._chat_streamed()
             self.history.append({"role": "assistant", "content": reply})
 
-            # 提取工具调用（```json {"tool":...}``` 或裸 JSON）
-            call = _parse_tool_call(reply)
-            if call is None:
+            # 提取全部工具调用（一条消息最多 3 个，按出现顺序执行——
+            # 实测模型常把 analyze_image + run_template 写进同一条消息）
+            calls = _parse_tool_calls(reply)
+            if not calls:
                 # 没有工具调用 = 大脑认为可以交付了
                 final_reply = reply
                 break
-            name, args = call
-            if name in ("run_template", "run_workflow", "submit"):
-                run_count += 1
-            # 护栏：相同参数重复提交（无效循环）——第2次即强提示改变策略
-            if name == "run_template" and isinstance(args, dict):
-                tid = args.get("template_id")
-                params = json.dumps(args.get("params") or {}, sort_keys=True,
-                                    ensure_ascii=False)
-                sig = (tid, params)
-                seen = self._run_signatures.get(sig, 0)
-                self._run_signatures[sig] = seen + 1
-                if seen >= 1:
-                    # 固定种子重试等于重跑同一张图：强制换随机种子，
-                    # 否则"修改后重试"看不出差异（实测视频重试固定 12345）
-                    prm = args.get("params")
-                    if isinstance(prm, dict) and prm.get("seed"):
-                        prm["seed"] = 0
+            for name, args in calls:
+                if name in ("run_template", "run_workflow", "submit"):
+                    run_count += 1
+                # 护栏：相同参数重复提交（无效循环）——第2次即强提示改变策略
+                if name == "run_template" and isinstance(args, dict):
+                    tid = args.get("template_id")
+                    params = json.dumps(args.get("params") or {}, sort_keys=True,
+                                        ensure_ascii=False)
+                    sig = (tid, params)
+                    seen = self._run_signatures.get(sig, 0)
+                    self._run_signatures[sig] = seen + 1
+                    if seen >= 1:
+                        # 固定种子重试等于重跑同一张图：强制换随机种子，
+                        # 否则"修改后重试"看不出差异（实测视频重试固定 12345）
+                        prm = args.get("params")
+                        if isinstance(prm, dict) and prm.get("seed"):
+                            prm["seed"] = 0
+                        self.history.append({"role": "user", "content":
+                            "[system] 该 run_template 参数组合已执行过且未能解决问题。"
+                            "禁止原样重试：必须改变策略（换节点/换参数/换工具/"
+                            "search_nodes 找新方案）或 ask_user 询问用户。"
+                            "（固定种子已自动改为随机，便于比较差异）"})
+                # 护栏：超过 4 次执行（首次+3次修复）强制交付，避免无限烧GPU
+                if run_count > 4:
                     self.history.append({"role": "user", "content":
-                        "[system] 该 run_template 参数组合已执行过且未能解决问题。"
-                        "禁止原样重试：必须改变策略（换节点/换参数/换工具/"
-                        "search_nodes 找新方案）或 ask_user 询问用户。"
-                        "（固定种子已自动改为随机，便于比较差异）"})
-            # 护栏：超过 4 次执行（首次+3次修复）强制交付，避免无限烧GPU
-            if run_count > 4:
-                self.history.append({"role": "user", "content":
-                    "[system] 已执行 %d 次生成（首次+3次修复），达到硬性上限。"
-                    "不要再调用执行类工具，基于已有结果完成交付总结。" % run_count})
-                continue
-            if self.verbose:
-                self._log(f"[工具] {name} {json.dumps(args, ensure_ascii=False)[:120]}")
-            ev("tool_start", {"tool": name, "args": args})
-            draft_before = json.dumps(self.ctx.draft, default=str) \
-                if self.ctx.draft else None
-            result = execute_tool(self.ctx, name, args)
-            # 警告（如幻觉参数被忽略）前置，确保截断窗口内可见
-            head = ""
-            if isinstance(result, dict) and result.get("warnings"):
-                head = "⚠警告: " + "; ".join(str(w) for w in result["warnings"]) + "\n"
-            obs = head + json.dumps(result, ensure_ascii=False, default=str)[:1200]
-            self.history.append({"role": "user",
-                                 "content": f"[observation] {obs}"})
-            ev("tool_end", {"tool": name, "ok": bool(result.get("ok", True)),
-                            "summary": obs[:500]})
-            if self.verbose and not result.get("ok", True):
-                self._log(f"  -> {obs[:160]}")
-            # 草稿变更 → 推送工作流图
-            if self.ctx.draft is not None:
-                draft_now = json.dumps(self.ctx.draft, default=str)
-                if draft_now != draft_before:
-                    ev("workflow_update", {
-                        "graph": self.ctx.draft,
-                        "meta": self.ctx.draft_meta})
+                        "[system] 已执行 %d 次生成（首次+3次修复），达到硬性上限。"
+                        "不要再调用执行类工具，基于已有结果完成交付总结。" % run_count})
+                    break
+                if self.verbose:
+                    self._log(f"[工具] {name} "
+                              f"{json.dumps(args, ensure_ascii=False)[:120]}")
+                ev("tool_start", {"tool": name, "args": args})
+                draft_before = json.dumps(self.ctx.draft, default=str) \
+                    if self.ctx.draft else None
+                result = execute_tool(self.ctx, name, args)
+                # 警告（如幻觉参数被忽略）前置，确保截断窗口内可见
+                head = ""
+                if isinstance(result, dict) and result.get("warnings"):
+                    head = "⚠警告: " + "; ".join(str(w) for w in result["warnings"]) + "\n"
+                obs = head + json.dumps(result, ensure_ascii=False, default=str)[:1200]
+                self.history.append({"role": "user",
+                                     "content": f"[observation] {obs}"})
+                ev("tool_end", {"tool": name, "ok": bool(result.get("ok", True)),
+                                "summary": obs[:500]})
+                if self.verbose and not result.get("ok", True):
+                    self._log(f"  -> {obs[:160]}")
+                # 草稿变更 → 推送工作流图
+                if self.ctx.draft is not None:
+                    draft_now = json.dumps(self.ctx.draft, default=str)
+                    if draft_now != draft_before:
+                        ev("workflow_update", {
+                            "graph": self.ctx.draft,
+                            "meta": self.ctx.draft_meta})
             self._compact_history()
 
         # 任务闭环：本轮真的生成了产物才沉淀技能（失败经验也记录）
@@ -276,7 +278,7 @@ class Brain:
 ## 提示词规范（按模板家族）
 {prompt_guide}
 
-## 工具（用 ```json 代码块调用，格式 {tool_call_example}；一次只调一个）
+## 工具（用 ```json 代码块调用，格式 {tool_call_example}；一条消息最多给 3 个工具调用，按出现顺序执行）
 {tools_schema_for_llm()}
 
 ## 工作规则
@@ -322,24 +324,32 @@ class Brain:
         }] + recent
 
 
-def _parse_tool_call(reply: str):
-    """提取工具调用。兼容三种形式：
-    1. ```json {"tool": ...}``` 代码围栏（标准）
-    2. 无围栏的 {"tool"/"task": ...} JSON 行（模型格式漂移）
-    3. 裸 "工具名(args)" 文本（兜底，无参数）
-    """
-    # 1) 围栏形式
-    m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", reply, re.S)
-    if m:
+MAX_CALLS_PER_MESSAGE = 3
+
+
+def _parse_tool_calls(reply: str, limit: int = MAX_CALLS_PER_MESSAGE):
+    """提取一条消息里的全部工具调用（按出现顺序，上限 limit）。
+
+    兼容三种形式：```json 围栏（可多个）、裸 JSON 行、工具名文本兜底。
+    实测模型常在一条消息里写 2 个调用（analyze_image + run_template），
+    旧版只执行第一个，第二个被丢进正文——这里全部提取、按序执行。"""
+    calls = []
+    # 1) 围栏形式（全部匹配）
+    for m in re.finditer(r"```(?:json)?\s*(\{.*?\})\s*```", reply, re.S):
         try:
             data = json.loads(m.group(1))
             name = _tool_name(data)
             if name:
-                return name, data.get("args", {})
+                calls.append((name, data.get("args", {})))
         except json.JSONDecodeError:
             pass
+        if len(calls) >= limit:
+            return calls
     # 2) 无围栏：逐行尝试解析含 tool/task 键的 JSON
-    for line in reply.splitlines():
+    # （先剔除已消费的围栏块，避免同一调用被围栏+裸行解析两次）
+    bare_text = re.sub(r"```(?:json)?\s*\{.*?\}\s*```", " ",
+                       reply, flags=re.S)
+    for line in bare_text.splitlines():
         line = line.strip()
         if not line.startswith("{") or '"tool"' not in line and '"task"' not in line:
             continue
@@ -349,13 +359,17 @@ def _parse_tool_call(reply: str):
             continue
         name = _tool_name(data)
         if name:
-            return name, data.get("args", {})
+            calls.append((name, data.get("args", {})))
+        if len(calls) >= limit:
+            return calls
+    if calls:
+        return calls
     # 3) 文本兜底：tool_name 且无参数的工具
     _init_tool_names()
     for tname in TOOL_NAME_INDEX:
         if re.search(rf"\b{tname}\b", reply):
-            return tname, {}
-    return None
+            return [(tname, {})]
+    return []
 
 
 def _tool_name(data: dict):
