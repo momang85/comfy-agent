@@ -1,41 +1,37 @@
-# 模型加载节点家族速查
+# 模型加载速查（本机实测节点）
 
-```markdown
-# ComfyUI 模型加载家族速查
+> 生成于 2026-09-10，数据源 = 本机 object_info 快照（1527 节点）+ 实景档案。所有类名经存在性断言。
 
-## 通用接线模式
-- **输入**：模型路径（字符串）或模型对象（直接传递）
-- **输出**：模型实例（Checkpoint/CLIP/VAE等）或处理后的张量（Latent/Conditioning）
-- **关键接口**：`model`（模型对象）、`conditioning`（控制条件）、`latent`（潜在表示）
+## 核心节点（本机存在）
+- **CheckpointLoaderSimple** — 加载预训练的扩散模型检查点，包含模型、CLIP文本编码器和VAE解码器。（关键参数: ckpt_name）
+  - 坑: 确保模型文件已正确放置在ComfyUI的models/checkpoints目录下
+- **CheckpointLoader** — 加载模型检查点及其配置（已弃用）（关键参数: config_name, ckpt_name）
+  - 坑: 已弃用，建议使用CheckpointLoaderSimple替代
+- **UNETLoader** — 加载扩散模型（UNet）（关键参数: unet_name, weight_dtype）
+  - 坑: 权重数据类型选择不当可能导致内存溢出或精度损失
+- **CLIPLoader** — 加载CLIP文本编码模型（关键参数: clip_name, type, device）
+  - 坑: CLIP类型与基础模型不匹配会导致生成失败
+- **DualCLIPLoader** — 加载双CLIP文本编码模型（如SDXL）（关键参数: clip_name1/clip_name2, type, device）
+  - 坑: 两个CLIP类型不一致会导致文本编码错误
+- **VAELoader** — 加载指定的VAE模型文件（关键参数: vae_name）
+  - 坑: 选错VAE可能导致图像色彩异常或细节丢失
+- **CLIPVisionLoader** — 加载CLIP视觉模型，用于图像特征提取（关键参数: clip_name, 通常从下拉菜单中选择预定义模型）
+  - 坑: 未安装对应CLIP模型会导致加载失败
+- **IPAdapterModelLoader** — 加载自定义IPAdapter模型文件（关键参数: ipadapter_file）
+  - 坑: 文件路径需正确指向.safetensors或.pt文件
+- **UpscaleModelLoader** — 加载图像放大模型（如ESRGAN等）（关键参数: model_name）
+  - 坑: 未安装对应模型会导致加载失败，需提前下载
+- **ControlNetLoader** — 加载ControlNet模型（关键参数: control_net_name）
+  - 坑: ControlNet类型与任务不匹配会导致控制效果差
+- **LoraLoader** — 加载LoRA模型并应用到基础模型和CLIP（关键参数: model, clip, lora_name, strength_model/strength_clip）
+  - 坑: LoRA强度过高可能导致生成结果失真
+- **LoraLoaderModelOnly** — 仅加载LoRA到模型（不加载CLIP）（关键参数: model, lora_name, strength_model）
+  - 坑: 过高强度可能导致生成异常
 
-## 核心节点与参数
-1. **CheckpointLoaderSimple**  
-   - 用途：加载基础模型（含UNET/CLIP/VAE）  
-   - 参数：`ckpt_name`（模型文件名）
+## 惯例与骨架
+- 管线共享一个 CheckpointLoaderSimple：引擎 compose 会自动合并重复加载器
+- VAE 优先用 checkpoint 槽 2（自带 VAE），避免 SD1.5/SDXL VAE 族错配
+- LoraLoaderModelOnly 只改模型不连 CLIP；LoRA 权重叠加 ≤1.2（角色 0.7-0.9）
 
-2. **CLIPTextEncode**  
-   - 用途：文本转条件  
-   - 参数：`text`（提示词）、`clip`（CLIP模型）
-
-3. **VAELoader**  
-   - 用途：加载VAE解码器  
-   - 参数：`vae_name`（VAE文件名）
-
-4. **LoRALoader**  
-   - 用途：加载LoRA权重  
-   - 参数：`lora_name`（LoRA文件）、`strength`（强度）
-
-5. **ControlNetLoader**  
-   - 用途：加载ControlNet预处理模型  
-   - 参数：`control_net_name`（ControlNet文件）
-
-## 常见坑
-- **模型路径错误**：确保文件名与`models`目录结构一致  
-- **类型不匹配**：CLIP/VAE需从CheckpointLoader分离后单独传递  
-- **强度参数**：LoRA/ControlNet的`strength`过高会导致生成异常  
-
-## 上下游接口约定
-- **上游**：文本提示（CLIPTextEncode）→ 条件生成（Conditioning系列）  
-- **下游**：模型对象（Checkpoint/VAE）→ 采样器（KSampler）或解码器（VAEDecode）  
-- **关键传递**：`latent`（LatentImage）→ KSampler → `latent` → VAEDecode → 图像
-```
+---
+本文档由 `scripts/rebuild_family_docs.py` 生成；节点库变动后重跑：`python scripts/rebuild_family_docs.py`

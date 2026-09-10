@@ -1,30 +1,24 @@
-# 其他节点家族速查
+# 其他常用速查（本机实测节点）
 
-```markdown
-# ComfyUI【其他】家族节点速查
+> 生成于 2026-09-10，数据源 = 本机 object_info 快照（1527 节点）+ 实景档案。所有类名经存在性断言。
 
-## 家族定位
-未分类节点的兜底集合，含高级技巧、实验性功能及特殊处理节点。
+## 核心节点（本机存在）
+- **ImageScaleToTotalPixels** — 按总像素数缩放图像（关键参数: image, upscale_method, megapixels, resolution_steps）
+  - 坑: megapixels设置过高可能导致内存不足
+- **ImpactLogger** — 记录调试数据，用于工作流调试和日志输出（关键参数: data, text）
+  - 坑: 未在本机工作流中使用，具体功能需参考官方文档
+- **ImpactLatentInfo** — 提取潜在空间的元数据信息（关键参数: value）
+  - 坑: 不同模型潜在空间结构可能不同
+- **ImpactImageInfo** — 提取图像的元数据信息（关键参数: value）
+  - 坑: 对特殊格式图像可能解析不全
+- **InpaintPreprocessor** — 预处理图像用于区域修复（关键参数: image, mask, black_pixel_for_xinsir_cn）
+  - 坑: mask必须与图像尺寸一致
+- **SAMPreprocessor** — 使用SAM模型对图像进行语义分割（关键参数: image, resolution）
+  - 坑: 分辨率设置过高可能导致处理速度变慢
 
-## 通用接线模式
-- **输入**：多类型（Latent/Model/Tensor/ControlNet等），需根据节点功能匹配
-- **输出**：单一明确（如Latent/Model/ControlNet等），避免跨类型误接
+## 惯例与骨架
+- ImpactWildcardEncode 支持通配符/LoRA 语法文本（见 logic.md）
+- ImpactLogger 可调试中间值；ImpactLatentInfo/ImageInfo 打印张量信息
 
-## 关键节点与参数要点
-- **LatentBlend**：潜在空间插值，需确保输入Latent尺寸一致
-- **SelfAttentionGuidance**：引导权重控制，过高导致细节丢失
-- **PerpNeg**：负向提示增强，需配合CLIP文本编码器
-- **SamplerEulerCFGpp**：采样优化，CFG Scale与步数需平衡
-- **TorchCompileModel**：模型编译加速，首次运行耗时较长
-- **LoraSave**：LoRA权重保存，需指定正确模型路径
-
-## 常见坑
-1. **尺寸不匹配**：LatentBlend等节点要求输入尺寸一致
-2. **类型混淆**：ModelComputeDtype等节点需明确输入/输出类型
-3. **采样器参数**：CFGpp等采样器对步数敏感，需调整测试
-
-## 接口约定
-- **上游**：CLIP文本编码器、VAE解码器等需输出明确类型
-- **下游**：UNet、采样器等节点需严格匹配输入类型
-- **特殊接口**：ControlNet相关节点需与预处理器输出对齐
-```
+---
+本文档由 `scripts/rebuild_family_docs.py` 生成；节点库变动后重跑：`python scripts/rebuild_family_docs.py`

@@ -1,31 +1,37 @@
-# 图像IO节点家族速查
+# 图像读写与变换速查（本机实测节点）
 
-```markdown
-# ComfyUI 图像IO家族速查
+> 生成于 2026-09-10，数据源 = 本机 object_info 快照（1527 节点）+ 实景档案。所有类名经存在性断言。
 
-## 通用接线模式
-- **输入**：图像（Image）、掩码（Mask）、可选模型（Model）
-- **输出**：图像（Image）、预览（Preview）、文件路径（String）
-- **关键**：LoadImage系列需指定路径，SaveImage需连接预览或图像
+## 核心节点（本机存在）
+- **LoadImage** — 从文件系统加载图像作为输入源（关键参数: image）
+  - 坑: 选错文件路径会导致加载失败
+- **LoadImageOutput** — 从历史输出中重新加载图像（关键参数: image）
+  - 坑: 选择非图像类型的输出会报错
+- **LoadImageMask** — 将图像转换为掩码（支持通道选择）（关键参数: image, channel）
+  - 坑: 通道选择错误会导致掩码无效
+- **SaveImage** — 将生成的图像保存到 ComfyUI 的输出目录中。（关键参数: 1. images）
+  - 本机接线: images ← FaceDetailerPipe; images ← VAEDecode
+  - 坑: 文件名前缀如果包含特殊字符或路径分隔符，可能导致保存失败。
+- **PreviewImage** — 实时预览VAE解码后的图像（关键参数: images）
+  - 本机接线: images ← VAEDecode
+  - 坑: 频繁调用可能影响性能，建议仅在调试时使用
+- **ImageScaleBy** — 按比例放大像素图像（关键参数: image, upscale_method, scale_by）
+  - 坑: scale_by过大可能导致图像模糊
+- **ImageScaleToTotalPixels** — 按总像素数缩放图像（关键参数: image, upscale_method, megapixels, resolution_steps）
+  - 坑: megapixels设置过高可能导致内存不足
+- **ImageFromBatch** — 从图像批次中提取指定图像（关键参数: image, batch_index, length）
+  - 坑: 索引超出范围会导致错误
+- **BatchImagesNode** — 将多张图像合并为批次（关键参数: images）
+  - 坑: 输入图像尺寸不一致可能导致批次处理失败
+- **ImageBlend** — 混合两张图像（关键参数: image1, image2, blend_factor, blend_mode）
+  - 坑: 混合因子过高或过低可能导致混合不自然
+- **ImageUpscaleWithModel** — 使用模型对图像进行放大处理（关键参数: upscale_model, image）
+  - 本机接线: upscale_model ← UpscaleModelLoader; image ← UltimateSDUpscale
+  - 坑: 放大模型需与任务匹配，否则效果不佳
 
-## 核心节点要点
-| 节点                | 用途                          | 关键参数                          |
-|---------------------|-------------------------------|-----------------------------------|
-| LoadImage           | 加载图片                      | `image_path`（支持通配符）        |
-| SaveImage           | 保存图片                      | `prefix`（文件名前缀）            |
-| PreviewImage        | 实时预览                      | 无（直接连接图像输出）            |
-| ImageScale/By       | 尺寸缩放                      | `width/height`或`scale_factor`    |
-| ImageBlend          | 图像混合                      | `blend_factor`（0-1）             |
-| ImageUpscaleWithModel| 模型放大                      | `model`（需连接放大模型）         |
+## 惯例与骨架
+- LoadImage 的槽 0=IMAGE 槽 1=MASK（按 alpha）；遮罩白色=生效区
+- 纯像素放大用 ImageScaleBy（lanczos）；模型放大用 ImageUpscaleWithModel（本机未装 ESRGAN 文件时不可用）
 
-## 常见坑
-1. LoadImage路径需用`/`分隔，不支持反斜杠
-2. ImageScaleBy缩放因子建议≤4，否则失真
-3. SaveImage未连接预览时可能不触发保存
-4. LoadImageMask需确保图片为灰度且尺寸匹配原图
-
-## 接口约定
-- **上游**：CLIPTextEncode/VAEDecode → 图像IO → KSampler/SavedImage
-- **关键**：VAEDecode输出需经ImageScale调整尺寸后再保存
-- **注意**：Mask相关节点（如ResizeImageMask）需在LoadImage后立即处理
-```
+---
+本文档由 `scripts/rebuild_family_docs.py` 生成；节点库变动后重跑：`python scripts/rebuild_family_docs.py`

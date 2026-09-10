@@ -1,33 +1,42 @@
-# 检测与姿态节点家族速查
+# 检测与细化速查（本机实测节点）
 
-```markdown
-# ComfyUI 检测与姿态节点家族速查
+> 生成于 2026-09-10，数据源 = 本机 object_info 快照（1527 节点）+ 实景档案。所有类名经存在性断言。
 
-## 家族通用接线模式
-- **输入**：图像（Image）+ 可选检测条件（如人脸ID、姿态提示）
-- **输出**：检测特征（DetectionFeature）+ 原图（Image）
-- **核心链**：原图 → 检测节点 → 特征注入 → 生成节点
+## 核心节点（本机存在）
+- **FaceDetailer** — 对图像中的人脸区域进行细节增强和修复（关键参数: image, model, clip, vae）
+  - 坑: 未在本机工作流中使用，具体接线方式需参考实际需求
+- **FaceDetailerPipe** — 通过管道配置对人脸进行细节增强和修复（关键参数: image, detailer_pipe, guide_size, max_size）
+  - 本机接线: image ← VAEDecode; detailer_pipe ← EditDetailerPipe; guide_size ← PrimitiveFloat
+  - 坑: 参数较多，需注意denoise和feather的平衡，避免过度修复
+- **BboxDetectorCombined_v2** — 使用组合边界框检测器检测图像中的物体边界框（关键参数: bbox_detector, image, threshold, dilation）
+  - 坑: threshold过高可能导致漏检，过低可能导致误检，需根据场景调整
+- **SegmDetectorCombined_v2** — 使用组合分割检测器生成图像中物体的分割掩码（关键参数: segm_detector, image, threshold, dilation）
+  - 坑: threshold和dilation参数需根据检测器特性和图像质量调整，否则可能影响分割精度
+- **CLIPSegDetectorProvider** — 基于CLIPSeg模型提供文本驱动的分割检测功能（关键参数: text, blur, threshold, dilation_factor）
+  - 坑: 阈值设置过高可能导致漏检，过低则产生过多噪声
+- **ONNXDetectorProvider** — 加载ONNX格式的目标检测模型（关键参数: model_name）
+  - 坑: 需确保模型文件与输入图像尺寸匹配
+- **BboxDetectorSEGS** — 使用边界框检测器生成SEGS分割数据（关键参数: bbox_detector, image, threshold, dilation）
+  - 坑: threshold过高可能导致漏检，过低则产生过多假阳性
+- **SegmDetectorSEGS** — 使用分割检测器生成SEGS分割数据（关键参数: segm_detector, image, threshold, dilation）
+  - 坑: dilation值过大会导致分割区域过度膨胀
+- **SAMLoader** — 加载SAM（Segment Anything Model）分割模型（关键参数: model_name, device_mode）
+  - 坑: 在无GPU环境下选择'Prefer GPU'会导致报错
+- **SAMDetectorCombined** — 使用SAM模型进行组合式目标检测（关键参数: sam_model, segs, image, detection_hint）
+  - 坑: threshold设置过低会产生过多小区域
+- **SAMPreprocessor** — 使用SAM模型对图像进行语义分割（关键参数: image, resolution）
+  - 坑: 分辨率设置过高可能导致处理速度变慢
+- **SEGSPreview** — 预览SEGS数据，支持透明度模式（关键参数: segs, alpha_mode, min_alpha, fallback_image_opt）
+  - 坑: alpha_mode和min_alpha参数影响预览效果
+- **ToDetailerPipe** — 将基础模型配置转换为详情管道配置（关键参数: model, clip, vae, positive）
+  - 本机接线: model ← DifferentialDiffusion; clip ← CheckpointLoaderSimple; vae ← ImpactSwitch
+  - 坑: 需确保模型、CLIP和VAE兼容，避免版本不匹配导致错误
+- **ToDetailerPipeSDXL** — 将SDXL基础模型配置转换为详情管道配置（关键参数: model, clip, vae, positive）
+  - 坑: 未在本机工作流中使用，需注意SDXL的双模型配置复杂性
 
-## 关键节点与参数要点
-1. **IPAdapterFaceID**  
-   - 用途：基于人脸ID的特征注入  
-   - 参数：`face_id`（人脸ID索引）、`weight`（权重，建议0.5-1.0）  
-2. **IPAdapterFaceIDKolors**  
-   - 用途：保留色彩的人脸ID适配  
-   - 参数：`color_strength`（色彩强度，默认1.0）  
-3. **IPAAdapterFaceIDBatch**  
-   - 用途：批量处理多图人脸ID  
-   - 参数：`batch_size`（批次大小，避免显存溢出）  
-4. **IPAdapterUnifiedLoaderFaceID**  
-   - 用途：统一加载人脸ID模型  
-   - 参数：`model_path`（模型路径，需提前下载）  
+## 惯例与骨架
+- FaceDetailer 默认：guide_size 512 / steps 20 / cfg 8 / denoise 0.5 / feather 5 / noise_mask on；小脸调 bbox_threshold 0.2
+- 本机缺 face_yolov8m（只有手部模型）：FaceDetailer 的 bbox 检测不可用，可走 CLIPSegDetectorProvider/SAM(sam_vit_b) 检测链；装 face_yolov8m.pt 后启用完整修脸
 
-## 常见坑
-- **显存不足**：批量处理时降低`batch_size`或分辨率。  
-- **ID失效**：确保输入图像含清晰人脸，否则特征注入失败。  
-- **权重失衡**：`weight`过高导致人脸过度拟合，建议逐步调试。  
-
-## 与相邻家族接口约定
-- **上游**：`CLIPTextEncode`提供文本提示，需与检测节点并行输入生成节点。  
-- **下游**：`KSampler`等生成节点需同时接收原图与检测特征，确保` conditioning_type`匹配。  
-```
+---
+本文档由 `scripts/rebuild_family_docs.py` 生成；节点库变动后重跑：`python scripts/rebuild_family_docs.py`

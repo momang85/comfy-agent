@@ -1,29 +1,43 @@
-# 视频节点家族速查
+# 视频速查（本机实测节点）
 
-```markdown
-# ComfyUI 视频节点家族速查
+> 生成于 2026-09-10，数据源 = 本机 object_info 快照（1527 节点）+ 实景档案。所有类名经存在性断言。
 
-## 通用接线模式
-- **输入**：视频文件/帧序列 → 处理节点 → 输出视频/帧
-- **核心流**：`LoadVideo` → [帧处理/增强] → `SaveVideo`/`CreateVideo`
-- **数据集**：`LoadVideoDataSetFromFolder` → `ShuffleVideoDataset` → 训练/采样
+## 核心节点（本机存在）
+- **LoadVideo** — 从文件加载视频（未在本机工作流中使用）（关键参数: file）
+  - 坑: 本工作流中未使用，需确认支持的文件格式
+- **GetVideoComponents** — 解析视频文件为组件（未在本机工作流中使用）（关键参数: video）
+  - 坑: 本工作流中未使用，实际功能需验证
+- **ImageFromBatch** — 从图像批次中提取指定图像（关键参数: image, batch_index, length）
+  - 坑: 索引超出范围会导致错误
+- **BatchImagesNode** — 将多张图像合并为批次（关键参数: images）
+  - 坑: 输入图像尺寸不一致可能导致批次处理失败
+- **CreateVideo** — 将图像序列和音频合成为视频文件（关键参数: images, audio, fps, bit_depth）
+  - 本机接线: images ← LTXVSeparateAVLatent; audio ← LTXVAudioVAEDecode; fps ← PrimitiveFloat
+  - 坑: fps参数在本工作流中被设为1而非默认30，可能影响视频流畅度
+- **SaveVideo** — 保存视频文件（支持多种格式）（关键参数: video）
+  - 本机接线: video ← CreateVideo
+  - 坑: 在《Image to Video》工作流中用于保存最终视频，需注意格式选择
+- **VHS_VideoCombine** — 将图像序列合成为视频或GIF（关键参数: images）
+  - 坑: 帧率设置不当可能导致视频卡顿或过快；格式选择需考虑兼容性和文件大小
+- **MiniMaxH3ImageToVideo** — 将单帧图像扩展为 MiniMax H3 视频序列（关键参数: clip）
+  - 坑: 未在本机工作流中使用，需确保首末帧图像尺寸一致
+- **EmptyMiniMaxH3LatentAV** — 创建空的 MiniMax H3 潜在音频-视频张量（关键参数: width）
+  - 坑: 未在本机工作流中使用，需确保分辨率与时长符合模型要求
+- **MiniMaxH3SigmaShift** — 调整 MiniMax H3 模型的视频/音频采样偏移（关键参数: model）
+  - 坑: 未在本机工作流中使用，偏移量需根据生成效果调整
+- **LTXVImgToVideo** — 将图像扩展为 LTXV 视频序列（关键参数: positive/negative）
+  - 坑: 未在本机工作流中使用，需确保图像尺寸与参数一致
+- **BeebleSwitchXVideoEdit** — 使用Beeble SwitchX进行视频编辑（关键参数: video, prompt, alpha_mode, max_resolution）
+  - 坑: 分辨率设置过高可能导致处理缓慢，未设置prompt可能无法进行有效编辑
+- **BriaRemoveVideoBackground** — 移除视频背景（关键参数: video）
+  - 坑: 动态背景可能导致分割不稳定
+- **BriaTransparentVideoBackground** — 移除视频背景并生成透明通道（关键参数: video）
+  - 坑: 透明边缘处理不当可能导致毛边现象
 
-## 关键节点与参数
-- **LoadVideo**：支持MP4/WEBM，`start_frame`/`end_frame`裁剪
-- **VideoFrameSample**：`frame_rate`降帧，`every_N`抽帧
-- **Flux3TextToVideoNode**：`prompt`控制生成，`motion_scale`调节动态强度
-- **FrameInterpolate**：`interpolation_factor`（2-8倍插帧）
-- **SaveVideo**：`fps`/`quality`（0-100）控制输出质量
+## 惯例与骨架
+- MiniMax H3：turbo LoRA strength 1.0 + 8 步；24fps、124 帧≈5 秒；官方 16:9 = 1344x768
+- LTX 蒸馏版：8 步低 CFG；帧数 8k+1 对齐
+- 多段续接：extract_frame 取末帧 → 下一段 i2v → merge_videos 合并
 
-## 常见坑
-1. **内存溢出**：长视频用`VideoTemporalCrop`分块处理
-2. **帧率错位**：`LoadVideo`后检查`fps`与节点输入是否匹配
-3. **数据集乱序**：`ShuffleVideoDataset`需配合`seed`参数复现结果
-
-## 接口约定
-- **上游**：CLIP文本编码器 → `Flux3TextToVideoNode`（文本转视频）
-- **下游**：VAE解码器 → `VideoFrameSample`（帧处理）→ `SaveVideo`
-- **音频**：`Audio`节点家族通过`CreateVideo`的`audio_path`参数合成
-
-> 注：视频生成节点（如Flux系列）需确保GPU显存充足，建议分≤16秒片段处理。
-```
+---
+本文档由 `scripts/rebuild_family_docs.py` 生成；节点库变动后重跑：`python scripts/rebuild_family_docs.py`
