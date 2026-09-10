@@ -16,6 +16,39 @@ from .ports import detect_ports
 _IMAGE_ENTRIES = ("LoadImage", "LoadImageMask")
 _LATENT_ENTRIES = ("EmptyLatentImage", "EmptySD3LatentImage",
                    "EmptySDXLLatentImage")
+# 纯加载器（输入无连线、结果只取决于参数）：两段模板常各带一个同款 loader，
+# 合并可省一次模型加载/显存占用
+_DEDUPE_SAFE = ("CheckpointLoaderSimple", "CheckpointLoader", "VAELoader",
+                "CLIPLoader", "DualCLIPLoader", "UNETLoader",
+                "ControlNetLoader", "UpscaleModelLoader")
+
+
+def _dedupe_loaders(api: dict) -> int:
+    """合并参数完全相同的加载器节点，返回被删除的节点数。"""
+    seen, remap = {}, {}
+    for nid in sorted(api, key=lambda x: (len(str(x)), str(x))):
+        node = api[nid]
+        if node.get("class_type") not in _DEDUPE_SAFE:
+            continue
+        ins = node.get("inputs", {})
+        if any(isinstance(v, list) for v in ins.values()):
+            continue                      # 有连线输入：不是纯加载器
+        key = (node["class_type"],
+               tuple(sorted((k, str(v)) for k, v in ins.items())))
+        if key in seen:
+            remap[nid] = seen[key]
+        else:
+            seen[key] = nid
+    if not remap:
+        return 0
+    for node in api.values():
+        for name, val in list(node.get("inputs", {}).items()):
+            link = parse_link(val)
+            if link and link.src in remap:
+                node["inputs"][name] = [remap[link.src], link.slot]
+    for nid in remap:
+        api.pop(nid, None)
+    return len(remap)
 
 
 class ComposeError(Exception):
@@ -82,6 +115,7 @@ def compose(api_a: dict, api_b: dict, knowledge,
         if rewired == 0:
             continue   # 入口没有下游（孤岛），不删除继续找其他类型
         merged.pop(entry_new, None)
+        _dedupe_loaders(merged)   # 同一模型被两段各加载一次 → 只留一个
 
         g = Graph(merged, knowledge)
         if g.has_cycle():

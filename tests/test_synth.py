@@ -211,8 +211,9 @@ class TestPortsAndCompose(unittest.TestCase):
         from comfy_agent.synth.compose import compose
         from comfy_agent.synth.graph import Graph
         merged = compose(_t2i(), self._upscale(), _k())
-        # LoadImage 入口被删除，其下游（ImageScaleBy b2）直连 A 的 VAEDecode
-        self.assertEqual(len(merged), 15)   # 7 + 9 - 1(入口删除)
+        # LoadImage 入口被删除，其下游（ImageScaleBy b2）直连 A 的 VAEDecode；
+        # 两段各带一个同款 CheckpointLoaderSimple，拼接后合并为一个
+        self.assertEqual(len(merged), 14)   # 7 + 9 - 1(入口) - 1(重复加载器)
         li = [n for n in merged.values() if n["class_type"] == "LoadImage"]
         self.assertEqual(li, [])
         self.assertEqual(merged["b2"]["inputs"]["image"], ["6", 0])

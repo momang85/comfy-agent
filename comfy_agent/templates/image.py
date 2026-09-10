@@ -40,9 +40,12 @@ class T2I(Template):
             Param("negative", "str", NEG_SDXL if self.family == "sdxl" else NEG_SD,
                   "负面提示词"),
             Param("width", "int", 1024 if self.family == "sdxl" else 512,
-                  "宽", minv=256, maxv=2048),
+                  "宽", minv=256, maxv=2048,
+                  desc="SDXL 最佳分辨率簇 1024x1024 / 1152x896 / 896x1152，"
+                       "低于 768 质量明显下降"),
             Param("height", "int", 1024 if self.family == "sdxl" else 512,
-                  "高", minv=256, maxv=2048),
+                  "高", minv=256, maxv=2048,
+                  desc="同宽：SDXL 建议 1024 簇"),
             Param("batch", "int", 1, "张数", minv=1, maxv=8),
             Param("steps", "int", 24, "步数", minv=4, maxv=60),
             Param("cfg", "float", 7.0, "CFG", minv=1.0, maxv=15.0),
@@ -50,6 +53,10 @@ class T2I(Template):
             Param("sampler", "choice", "dpmpp_2m", "采样器",
                   choices=["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde",
                            "dpmpp_3m_sde", "ddim", "uni_pc"]),
+            Param("scheduler", "choice", "karras", "调度器",
+                  choices=["karras", "simple", "beta", "normal",
+                           "exponential", "sgm_uniform", "ddim_uniform"],
+                  desc="karras 配 dpmpp_2m 是 SDXL/SD1.5 社区常用组合"),
             Param("ckpt", "str", self.ckpt, "模型"),
         ]
 
@@ -68,7 +75,8 @@ class T2I(Template):
                 "batch_size": q["batch"]}},
             "5": ksampler(["1", 0], ["2", 0], ["3", 0], ["4", 0],
                           seed=seed, steps=q["steps"], cfg=q["cfg"],
-                          sampler=q["sampler"], denoise=1.0),
+                          sampler=q["sampler"], scheduler=q["scheduler"],
+                          denoise=1.0),
             "6": {"class_type": "VAEDecode", "inputs": {
                 "samples": ["5", 0], "vae": ["1", 2]}},
             "7": {"class_type": "SaveImage", "inputs": {
@@ -118,7 +126,8 @@ class I2I(T2I):
                   "inputs": {"ckpt_name": ckpt}},
             "7": ksampler(["5", 0], ["4", 0], ["6", 0], ["3", 0],
                           seed=seed, steps=q["steps"], cfg=q["cfg"],
-                          sampler=q["sampler"], denoise=q["denoise"]),
+                          sampler=q["sampler"], scheduler=q["scheduler"],
+                          denoise=q["denoise"]),
             "8": {"class_type": "VAEDecode", "inputs": {
                 "samples": ["7", 0], "vae": ["5", 2]}},
             "9": {"class_type": "SaveImage", "inputs": {
@@ -158,8 +167,15 @@ class StyleTransfer(Template):
             Param("strength", "float", 0.9, "ControlNet强度", minv=0.1, maxv=1.0),
             Param("steps", "int", 30, "步数", minv=8, maxv=60),
             Param("cfg", "float", 6.0, "CFG", minv=1.0, maxv=12.0),
-            Param("denoise", "float", 1.0, "重绘幅度", minv=0.3, maxv=1.0),
+            Param("denoise", "float", 1.0, "重绘幅度", minv=0.3, maxv=1.0,
+                  desc="换风格建议 0.6-0.85；0.4-0.55 只做微调（风格变化会很不明显）"),
             Param("seed", "int", 0, "种子(0=随机)"),
+            Param("sampler", "choice", "dpmpp_2m", "采样器",
+                  choices=["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde",
+                           "dpmpp_3m_sde", "ddim", "uni_pc"]),
+            Param("scheduler", "choice", "karras", "调度器",
+                  choices=["karras", "simple", "beta", "normal",
+                           "exponential", "sgm_uniform", "ddim_uniform"]),
             Param("ckpt", "str", SDXL_CKPT, "模型"),
         ]
 
@@ -192,6 +208,7 @@ class StyleTransfer(Template):
                 "pixels": ["1", 0], "vae": ["5", 2]}},
             "16": ksampler(["5", 0], ["12", 0], ["12", 1], ["15", 0],
                            seed=seed, steps=q["steps"], cfg=q["cfg"],
+                           sampler=q["sampler"], scheduler=q["scheduler"],
                            denoise=q["denoise"]),
             "17": {"class_type": "VAEDecode", "inputs": {
                 "samples": ["16", 0], "vae": ["5", 2]}},
@@ -226,6 +243,12 @@ class UpscalePass(Template):
             Param("steps", "int", 20, "步数", minv=8, maxv=40),
             Param("cfg", "float", 7.0, "CFG", minv=1.0, maxv=12.0),
             Param("seed", "int", 0, "种子(0=随机)"),
+            Param("sampler", "choice", "dpmpp_2m", "采样器",
+                  choices=["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde",
+                           "dpmpp_3m_sde", "ddim", "uni_pc"]),
+            Param("scheduler", "choice", "karras", "调度器",
+                  choices=["karras", "simple", "beta", "normal",
+                           "exponential", "sgm_uniform", "ddim_uniform"]),
             Param("ckpt", "str", SDXL_CKPT, "模型"),
         ]
 
@@ -251,6 +274,7 @@ class UpscalePass(Template):
                 "pixels": ["2", 0], "vae": ["3", 2]}},
             "7": ksampler(["3", 0], ["4", 0], ["5", 0], ["6", 0],
                           seed=seed, steps=q["steps"], cfg=q["cfg"],
+                          sampler=q["sampler"], scheduler=q["scheduler"],
                           denoise=q["denoise"]),
             "8": {"class_type": "VAEDecode", "inputs": {
                 "samples": ["7", 0], "vae": ["3", 2]}},

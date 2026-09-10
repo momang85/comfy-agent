@@ -14,7 +14,8 @@ from typing import Any, Optional
 class Param:
     def __init__(self, name: str, ptype: str, default, title: str = "",
                  choices: list = None, minv=None, maxv=None,
-                 required: bool = False, desc: str = ""):
+                 required: bool = False, desc: str = "",
+                 unit: str = "", aliases: list = None, recommended=None):
         self.name = name
         self.ptype = ptype          # str | int | float | bool | image | choice
         self.default = default
@@ -24,6 +25,9 @@ class Param:
         self.maxv = maxv
         self.required = required
         self.desc = desc
+        self.unit = unit            # 单位说明（如"帧(24fps)"），消除量纲歧义
+        self.aliases = aliases or []   # 大脑可能用的别名（帧/秒、duration 等）
+        self.recommended = recommended if recommended is not None else default
 
     def to_dict(self):
         d = {"name": self.name, "type": self.ptype, "default": self.default,
@@ -34,6 +38,10 @@ class Param:
             d["min"] = self.minv
         if self.maxv is not None:
             d["max"] = self.maxv
+        if self.unit:
+            d["unit"] = self.unit
+        if self.recommended is not None and self.recommended != self.default:
+            d["recommended"] = self.recommended
         if self.desc:
             d["desc"] = self.desc
         return d
@@ -64,6 +72,22 @@ class Template:
         for prm in params:
             out[prm.name] = p.get(prm.name, prm.default)
         return out
+
+    def normalize_params(self, p: dict) -> tuple[dict, list[str]]:
+        """参数规范化：别名 → 主名（帧/秒、duration 等歧义名收敛）。
+
+        返回 (规范化后的参数, 说明列表)。子类可覆盖做单位换算。"""
+        out, notes = dict(p or {}), []
+        for prm in self.params():
+            for al in prm.aliases:
+                if al not in out:
+                    continue
+                if prm.name not in out:
+                    out[prm.name] = out.pop(al)
+                    notes.append(f"参数 {al} 已按别名映射为 {prm.name}")
+                else:
+                    out.pop(al)      # 主名已给出：丢弃别名键，避免"未识别参数"告警
+        return out, notes
 
     def to_dict(self):
         return {"id": self.id, "name": self.name, "category": self.category,

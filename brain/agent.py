@@ -96,10 +96,16 @@ class Brain:
                 seen = self._run_signatures.get(sig, 0)
                 self._run_signatures[sig] = seen + 1
                 if seen >= 1:
+                    # 固定种子重试等于重跑同一张图：强制换随机种子，
+                    # 否则"修改后重试"看不出差异（实测视频重试固定 12345）
+                    prm = args.get("params")
+                    if isinstance(prm, dict) and prm.get("seed"):
+                        prm["seed"] = 0
                     self.history.append({"role": "user", "content":
                         "[system] 该 run_template 参数组合已执行过且未能解决问题。"
                         "禁止原样重试：必须改变策略（换节点/换参数/换工具/"
-                        "search_nodes 找新方案）或 ask_user 询问用户。"})
+                        "search_nodes 找新方案）或 ask_user 询问用户。"
+                        "（固定种子已自动改为随机，便于比较差异）"})
             # 护栏：超过 4 次执行（首次+3次修复）强制交付，避免无限烧GPU
             if run_count > 4:
                 self.history.append({"role": "user", "content":

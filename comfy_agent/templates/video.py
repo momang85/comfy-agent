@@ -20,7 +20,39 @@ LTX_CKPT = "ltx-2.3-22b-distilled-1.1.safetensors"
 LTX_LORA = "ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
 
 
-class MiniMaxVideoBase(Template):
+def _to_frames(raw, fps: float = 24.0) -> tuple:
+    """把 length 归一为帧数。返回 (值, 是否做了秒→帧换算)。
+
+    规则：'5s'/'5秒' → 按秒；裸值 <24（不足 1 秒，不可能是有效视频长度）
+    → 按秒理解；其余按帧原样。"""
+    s = str(raw).strip().lower()
+    is_seconds = s.endswith("s") or s.endswith("秒")
+    num = s.replace("秒", "").replace("s", "").strip()
+    try:
+        val = float(num)
+    except ValueError:
+        return raw, False
+    if not is_seconds and val >= 24:
+        return raw, False
+    return max(24, int(round(val * fps))), True
+
+
+class _LengthUnitsMixin:
+    """视频 length 单位消歧（秒 vs 帧）。"""
+    FPS = 24
+
+    def normalize_params(self, p: dict) -> tuple[dict, list[str]]:
+        out, notes = super().normalize_params(p)
+        if out.get("length") is not None:
+            frames, converted = _to_frames(out["length"], self.FPS)
+            if converted:
+                notes.append(f"length={out['length']!r} 按秒理解"
+                             f"（{self.FPS}fps）→ {frames} 帧")
+                out["length"] = frames
+        return out, notes
+
+
+class MiniMaxVideoBase(_LengthUnitsMixin, Template):
     category = "video"
     family = "minimax"
     models_used = [MM_UNET, MM_LORA, MM_CLIP, MM_VAE]
@@ -30,16 +62,28 @@ class MiniMaxVideoBase(Template):
     def common_params(self):
         return [
             Param("prompt", "str", "", "视频描述", required=True,
-                  desc="自然语言描述（Qwen3VL 编码器，中文可用）"),
+                  desc="自然语言描述（Qwen3VL 编码器，中文可用）。"
+                       "要写动作/镜头/音效，不要写成逗号标签堆砌"),
             Param("width", "int", 768, "宽", minv=256, maxv=1344),
             Param("height", "int", 448, "高", minv=256, maxv=768),
             Param("length", "int", 124, "帧数", minv=5, maxv=3600,
-                  desc="24fps；124帧≈5秒；模型训练区间124-362"),
+                  unit="帧(24fps)",
+                  aliases=["frames", "seconds", "duration", "num_frames",
+                           "duration_s"],
+                  desc="这是帧数不是秒数：124帧≈5秒；模型训练区间124-362。"
+                       "传 seconds/duration=5 会自动按 24fps 换算成 120 帧"),
             Param("steps", "int", 8, "步数", minv=4, maxv=40,
                   desc="turbo LoRA 推荐 8 步"),
-            Param("cfg", "float", 3.0, "CFG", minv=1.0, maxv=8.0),
+            Param("cfg", "float", 3.0, "CFG", minv=1.0, maxv=8.0,
+                  desc="turbo 蒸馏模型推荐 3.0，调高（如 7+）容易过曝发糊"),
             Param("seed", "int", 0, "种子(0=随机)"),
         ]
+
+    FPS = 24
+
+    def render(self, p: dict):
+        q = self._fill_defaults(p, self.params())
+        return self.render_base(q, q.get("image") or "example.png")
 
     def render_base(self, q: dict, first_frame: str | None) -> dict:
         seed = q["seed"] or _rand_seed()
@@ -127,7 +171,7 @@ class MiniMaxI2V(MiniMaxVideoBase):
         return self.render_base(q, q.get("image") or "example.png")
 
 
-class LTXVideo(Template):
+class LTXVideo(_LengthUnitsMixin, Template):
     """LTX-2.3 图生视频（对应用户 12GB 优化工作流的节点组合）。"""
     id = "ltx_i2v"
     name = "图生视频-LTX"
@@ -146,9 +190,13 @@ class LTXVideo(Template):
             Param("width", "int", 768, "宽", minv=256, maxv=1280),
             Param("height", "int", 512, "高", minv=256, maxv=768),
             Param("length", "int", 121, "帧数", minv=9, maxv=257,
-                  desc="24fps；121帧≈5秒"),
+                  unit="帧(24fps)",
+                  aliases=["frames", "seconds", "duration", "num_frames",
+                           "duration_s"],
+                  desc="帧数不是秒数：121帧≈5秒；传 seconds/duration=5 会自动换算"),
             Param("steps", "int", 10, "步数", minv=4, maxv=40),
-            Param("cfg", "float", 3.0, "CFG", minv=1.0, maxv=10.0),
+            Param("cfg", "float", 3.0, "CFG", minv=1.0, maxv=10.0,
+                  desc="蒸馏模型推荐 3.0 左右"),
             Param("seed", "int", 0, "种子(0=随机)"),
         ]
 

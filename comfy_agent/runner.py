@@ -256,10 +256,14 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     # 静默忽略——执行照常，但结果中显式告知哪些参数未生效
     known = {prm.name for prm in tpl.params()}
     params = dict(params or {})
-    unknown = [k for k in params if k not in known]
     knowledge = kw.get("knowledge") or Knowledge.build()
+    # 顺序：别名/单位归一 → 模型适配 → 参数护栏 → 提示词体检
+    params, unit_notes = tpl.normalize_params(params)
+    unknown = [k for k in params if k not in known]
     # 跨设备模型适配：默认/显式 checkpoint 本机不存在时，自动绑定本机模型
     params, adapt_notes = adapt_ckpt(tpl, params, knowledge)
+    params, guard_notes = _guard_params(tpl, params)
+    params, prompt_notes = _apply_prompt_spec(tpl, params)
     ckpt_default = next((p.default for p in tpl.params()
                          if p.name == "ckpt"), None)
     ckpt_ok = bool(params.get("ckpt")) and \
@@ -269,24 +273,34 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     missing = [m for m in tpl.models_used
                if not knowledge.find_model(m, folders=_folders_for(m))
                and not (ckpt_ok and m == ckpt_default)]
+    all_notes = list(unit_notes) + list(adapt_notes) + list(guard_notes) \
+        + list(prompt_notes)
     if missing:
         _emit_stage("validation_failed",
                     {"error": f"缺少模型: {missing}"})
-        return {"ok": False, "stage": "render_failed",
-                "error": f"模板 {template_id} 缺少模型: {missing}",
-                "missing_models": missing,
-                "hint": ("图像模板会自动适配本机任意 SDXL/SD1.5 checkpoint"
-                         "（可用 settings.json 的 model_prefs 指定偏好）；"
-                         "视频模板需安装对应模型文件，见 README 模型要求")}
+        early = {"ok": False, "stage": "render_failed",
+                 "error": f"模板 {template_id} 缺少模型: {missing}",
+                 "missing_models": missing,
+                 "hint": ("图像模板会自动适配本机任意 SDXL/SD1.5 checkpoint"
+                          "（可用 settings.json 的 model_prefs 指定偏好）；"
+                          "视频模板需安装对应模型文件，见 README 模型要求")}
+        if all_notes:
+            early["warnings"] = all_notes      # 参数收敛/提示词体检结果别丢
+            for w in all_notes:
+                _emit_stage("warning", {"warning": w})
+        return early
     try:
         wf = tpl.render(params)
     except Exception as e:
         _emit_stage("validation_failed",
                     {"error": f"渲染失败: {e}"})
-        return {"ok": False, "stage": "render_failed",
-                "error": f"渲染失败: {e}"}
+        failed = {"ok": False, "stage": "render_failed",
+                  "error": f"渲染失败: {e}"}
+        if all_notes:
+            failed["warnings"] = all_notes
+        return failed
     result = run_workflow(wf, source=f"template:{template_id}", **kw)
-    warnings = list(adapt_notes)
+    warnings = list(all_notes)
     if unknown:
         warnings.append(f"模板 {template_id} 不识别参数 {unknown}（已忽略）。"
                         f"支持参数: {sorted(known)}")
@@ -296,6 +310,51 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     if warnings:
         result.setdefault("warnings", []).extend(warnings)
     return result
+
+
+def _param_of(tpl, name: str):
+    return next((p for p in tpl.params() if p.name == name), None)
+
+
+def _guard_params(tpl, params: dict) -> tuple[dict, list[str]]:
+    """高危参数护栏：显著偏离模板推荐值时自动收敛并告警。
+
+    实测最贵的一类错误是量级错误（视频 turbo 模型 cfg 被写到 7.5，推荐 3.0，
+    结果是过曝发糊），比"参数名写错"更隐蔽。"""
+    notes = []
+    cfg = _param_of(tpl, "cfg")
+    val = params.get("cfg")
+    if cfg is not None and isinstance(val, (int, float)) and cfg.recommended:
+        rec = float(cfg.recommended)
+        if val > rec * 1.5:
+            notes.append(f"cfg={val} 远高于该模板推荐值 {rec}，已收敛为 "
+                         f"{rec}（蒸馏/低步数模型高 CFG 会过曝发糊）")
+            params["cfg"] = rec
+    return params, notes
+
+
+def _apply_prompt_spec(tpl, params: dict) -> tuple[dict, list[str]]:
+    """提示词体检（族规范）+ 负面词保底合并 + 分辨率合理性提醒。"""
+    from .promptspec import check_prompt, prepare
+    if _param_of(tpl, "prompt") is None or \
+            not str(params.get("prompt") or "").strip():
+        return params, []
+    family = (getattr(tpl, "family", "") or "").strip() \
+        or config.family_of(str(params.get("ckpt") or ""))
+    if _param_of(tpl, "negative") is None:
+        chk = check_prompt(family, params["prompt"], "")   # 无负面参数：只体检正向
+        params["prompt"] = chk["prompt"]
+        return params, chk["warnings"]
+    prompt, negative, warns = prepare(
+        family, params["prompt"], str(params.get("negative") or ""))
+    params["prompt"] = prompt
+    params["negative"] = negative
+    w, h = params.get("width"), params.get("height")
+    if family in ("sdxl", "sd15") and isinstance(w, int) and isinstance(h, int) \
+            and min(w, h) < 768:
+        warns.append(f"分辨率 {w}x{h} 低于 SDXL/SD1.5 原生区间（建议 1024 簇 / "
+                     "SD1.5 用 512 但 SDXL 在 512 会明显掉质量）")
+    return params, warns
 
 
 def upload_input_image(path: str | Path, client: Client = None) -> str:
