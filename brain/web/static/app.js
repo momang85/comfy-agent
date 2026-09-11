@@ -538,6 +538,19 @@ function setStage(stage, failed) {
   }
 }
 
+// 警告提示条：独立区域 + 12 秒自动消失（此前会顶掉状态行的阶段显示）
+let warnTimer = null;
+function showWarning(text) {
+  const el = document.getElementById("warnline");
+  if (!el) return;
+  el.textContent = String(text || "").slice(0, 180);
+  el.style.cssText = "color:#e0a800;font-size:12px;max-width:420px;" +
+    "overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+  el.classList.remove("hidden");
+  if (warnTimer) clearTimeout(warnTimer);
+  warnTimer = setTimeout(() => el.classList.add("hidden"), 12000);
+}
+
 function addEvalCard(ev) {
   const html = renderEvalCard(ev);
   // 同一 prompt_id 只保留一张评估卡（引擎强制评估 + 大脑 view_* 会重复上报）
@@ -614,8 +627,8 @@ function handleEvent(msg) {
       break;
     case "stage":
       if (data.stage === "warning") {
-        // 警告类事件只更新状态行文字，不改阶段条
-        statusEl.textContent = String(data.detail?.warning || "警告").slice(0, 60);
+        // 警告走独立区域（#warnline），不再覆盖阶段显示
+        showWarning(String(data.detail?.warning || "警告"));
         break;
       }
       setStage(data.stage);
@@ -657,9 +670,15 @@ function handleEvent(msg) {
       vramEl.classList.toggle("hot", typeof data.temp_c === "number" && data.temp_c >= 85);
       break;
     }
-    case "progress":
-      queueEl.textContent = `队列 ${data.queue_position}`;
+    case "progress": {
+      // 渲染期心跳：队列位置 + 已运行时长（长任务唯一可见的进度信号）
+      const sec = Number(data.elapsed_sec || 0);
+      const mmss = sec >= 60 ? `${Math.floor(sec / 60)}分${sec % 60}秒` : `${sec}秒`;
+      queueEl.textContent = sec > 0
+        ? `队列 ${data.queue_position} · 已运行 ${mmss}`
+        : `队列 ${data.queue_position}`;
       break;
+    }
   }
 }
 

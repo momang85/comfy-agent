@@ -17,13 +17,21 @@ REM    -> stop all (8188/8899 listeners + hui-shi launcher),
 REM       verify ports free, then start fresh.
 REM ============================================================
 
-REM Portable paths: project root = parent of this script's folder;
-REM ComfyUI from env COMFY_ROOT -> comfy_root.local -> install.bat guide
+REM Portable paths: project root = parent of this script's folder (normalized);
+REM ComfyUI from env COMFY_ROOT -> comfy_root.local -> common locations
 set "PROJ=%~dp0.."
+pushd "%PROJ%" && set "PROJ=%CD%" && popd
 if "%COMFY_ROOT%"=="" if exist "%PROJ%\comfy_root.local" set /p COMFY_ROOT=<"%PROJ%\comfy_root.local"
+REM 回落探测：环境变量与 comfy_root.local 都没有时，试常见安装位置
+if "%COMFY_ROOT%"=="" call :probe_comfy
 if "%COMFY_ROOT%"=="" (
   echo   [ERROR] ComfyUI path not configured.
   echo   Run install.bat once to set it, or set env var COMFY_ROOT.
+  pause & exit /b 1
+)
+if not exist "%COMFY_ROOT%\python\python.exe" (
+  echo   [ERROR] invalid ComfyUI path: %COMFY_ROOT%
+  echo   expected %%COMFY_ROOT%%\python\python.exe and %%COMFY_ROOT%%\ComfyUI\main.py
   pause & exit /b 1
 )
 set "PY=%COMFY_ROOT%\python\python.exe"
@@ -45,7 +53,8 @@ echo ============================================
 
 if exist "%AGENT_HOME%\webui.pid" (
   set /p OLDPID=<"%AGENT_HOME%\webui.pid"
-  tasklist /FI "PID eq !OLDPID!" 2>nul | findstr "!OLDPID!" >nul && (
+  REM 只杀确实是 python 的进程：PID 复用时不误杀无关程序
+  tasklist /FI "PID eq !OLDPID!" /FO CSV /NH 2>nul | findstr /I "python.exe" >nul && (
     taskkill /F /PID !OLDPID! >nul 2>&1
     echo   [Web UI] stopped old pid=!OLDPID!
   )
@@ -95,7 +104,8 @@ REM Set COMFY_VRAM_MODE=high to pin models in VRAM (image-only workloads, much f
 REM but CRASHES with big video models such as MiniMax H3 INT8 ~20GB).
 set "VRAM_FLAG="
 if /I "%COMFY_VRAM_MODE%"=="high" set "VRAM_FLAG=--highvram"
-start "ComfyUI" /D "%COMFY_ROOT%" /MIN cmd /c ""%PY%" -B "%MAIN%" !VRAM_FLAG! --reserve-vram 1.5 --force-channels-last --preview-method auto --fast > "%LOG_DIR%\comfyui.log" 2>&1"
+call :rotate_log "%LOG_DIR%\comfyui.log"
+start "ComfyUI" /D "%COMFY_ROOT%" /MIN cmd /c ""%PY%" -B "%MAIN%" !VRAM_FLAG! --reserve-vram 1.5 --force-channels-last --preview-method auto --fast >> "%LOG_DIR%\comfyui.log" 2>&1"
 echo   Waiting for ComfyUI ready...
 set /a TRIES=0
 :wait_comfy
@@ -118,7 +128,8 @@ call :web_alive && (
   echo   [Reuse] Web UI already running on 8899
   goto all_ready
 )
-start "ComfyUI-Brain-WebUI" /D "%PROJ%" /MIN cmd /c ""%PY%" -B -m brain --web > "%LOG_DIR%\webui.log" 2>&1"
+call :rotate_log "%LOG_DIR%\webui.log"
+start "ComfyUI-Brain-WebUI" /D "%PROJ%" /MIN cmd /c ""%PY%" -B -m brain --web >> "%LOG_DIR%\webui.log" 2>&1"
 echo   Waiting for Web UI ready...
 set /a TRIES=0
 :wait_web
@@ -174,3 +185,21 @@ exit /b %errorlevel%
 REM returns 0 if our Web UI answers on 8899
 powershell -NoProfile -Command "try { $j = Invoke-RestMethod -Uri 'http://127.0.0.1:8899/api/status' -TimeoutSec 3; if ($j.ok -ne $null) { exit 0 } else { exit 1 } } catch { exit 1 }" >nul 2>&1
 exit /b %errorlevel%
+
+:probe_comfy
+REM COMFY_ROOT 未配置时探测常见安装位置（需要 python\python.exe + ComfyUI\main.py）
+for %%P in ("D:\comfiUI\ComfyUI-aki\ComfyUI-aki-v3" "D:\ComfyUI_windows_portable" "D:\comfyui\ComfyUI-aki-v3" "%USERPROFILE%\ComfyUI" "%USERPROFILE%\comfyui") do (
+  if "!COMFY_ROOT!"=="" if exist "%%~fP\python\python.exe" if exist "%%~fP\ComfyUI\main.py" (
+    set "COMFY_ROOT=%%~fP"
+    echo   [probe] found ComfyUI: %%~fP
+  )
+)
+exit /b 0
+
+:rotate_log
+REM 日志 >5MB 时轮转为 .1（原来是 > 截断，崩溃现场重启即失）
+if exist "%~1" for %%A in ("%~1") do if %%~zA GTR 5242880 (
+  if exist "%~1.1" del "%~1.1" >nul 2>&1
+  move /Y "%~1" "%~1.1" >nul 2>&1
+)
+exit /b 0

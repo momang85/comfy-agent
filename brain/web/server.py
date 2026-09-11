@@ -124,6 +124,7 @@ class WebSession:
         self.default_id = self.store.ensure_default().id
         self.sessions: dict[str, BrainSession] = {}
         self._lock = threading.Lock()
+        self._run_started: dict = {}      # prompt_id -> 开始时间（进度心跳用）
 
     def session_for(self, pid: str | None) -> BrainSession:
         pid = pid or self.default_id
@@ -179,9 +180,18 @@ class WebSession:
                 pending = q.get("queue_pending") or []
                 if running or pending:
                     pid = running[0][1] if running else pending[0][1]
+                    # 渲染期进度心跳：ComfyUI 无步数接口，至少给出"已运行时长"，
+                    # 否则 5-15 分钟里前端只有一句"阶段: running"
+                    started = self._run_started.setdefault(pid, time.time())
                     ev.emit("progress", {
                         "prompt_id": pid[:8],
-                        "queue_position": len(running) + len(pending)})
+                        "queue_position": len(running) + len(pending),
+                        "elapsed_sec": int(time.time() - started)
+                        if running else 0})
+                    for k in [k for k in self._run_started if k != pid]:
+                        self._run_started.pop(k, None)
+                elif self._run_started:
+                    self._run_started.clear()
             except Exception:
                 pass
             time.sleep(2)
