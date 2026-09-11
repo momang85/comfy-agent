@@ -268,7 +268,7 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     params, prompt_notes = _apply_prompt_spec(tpl, params)
     # 输入文件由引擎代传到 ComfyUI /input（大脑常漏这一步，见 problems-detailed P0-4）
     params, upload_notes, upload_err = _ensure_inputs_uploaded(
-        tpl, params, kw.get("client"))
+        tpl, params, kw.get("client"), kw.get("output_root"))
     if upload_err:
         _emit_stage("validation_failed", {"error": upload_err})
         return {"ok": False, "stage": "render_failed", "error": upload_err}
@@ -320,11 +320,14 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     return result
 
 
-def _ensure_inputs_uploaded(tpl, params: dict, client):
-    """模板声明的输入文件若给的是本机路径，自动上传到 ComfyUI /input。
+def _ensure_inputs_uploaded(tpl, params: dict, client, output_root=None):
+    """模板声明的输入文件自动上传到 ComfyUI /input。
 
-    实测大脑会漏掉"先 upload_image 送 /input"这一步，导致 LoadImage/LoadVideo
-    在服务器端 value_not_in_list。前置条件由引擎强制，不依赖大脑记忆。
+    两种情况都覆盖：
+    1. 值是本机存在的文件路径 → 直接上传
+    2. 值是"裸文件名"（大脑预判的 server 名，实际还没上传）→ 在本项目
+       产物目录里找同名文件补传（实测大脑会先写 `agent_t2i_xxx.png`
+       再补 upload，第一次必然被服务器 value_not_in_list 拒绝）
     返回值：(params, notes, error)。error 非空时调用方直接报错返回。"""
     decls = getattr(tpl, "input_files", None) or []
     notes: list[str] = []
@@ -335,8 +338,17 @@ def _ensure_inputs_uploaded(tpl, params: dict, client):
         if not isinstance(val, str) or not val.strip():
             continue
         p = Path(val)
+        if not p.is_file() and output_root:
+            # 裸文件名兜底：在本项目产物目录里按文件名找
+            try:
+                cand = next((f for f in Path(output_root).rglob(p.name)
+                             if f.is_file()), None)
+            except Exception:
+                cand = None
+            if cand:
+                p = cand
         if not p.is_file():
-            continue          # 已是 server 名或不存在 → 交给后续校验
+            continue          # 既不是本地文件也找不到 → 交给后续校验报错
         try:
             cli = client or Client()
             server_name = (cli.upload_image(p) or {}).get("name", p.name)

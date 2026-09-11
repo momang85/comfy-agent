@@ -247,6 +247,24 @@ class Brain:
             capability_blob = capability_summary(self.ctx.knowledge)
         except Exception:
             capability_blob = ""
+        # 本项目最近产物：Web UI/进程重启后大脑不会丢"上一轮生成过什么"，
+        # 可直接把这些文件名填进模板的 image/video 参数（引擎会自动补传 /input）
+        recent_blob = ""
+        try:
+            proj = getattr(self.ctx, "project", None)
+            root = proj.outputs_dir() if proj else None
+            if root and root.exists():
+                items = [f for f in root.rglob("*")
+                         if f.is_file() and f.suffix.lower() in
+                         (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm",
+                          ".mkv", ".mov")]
+                items.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+                if items:
+                    names = [f.name for f in items[:6]]
+                    recent_blob = ("## 本项目最近产物（可直接用作模板参数，"
+                                   "引擎会自动上传）\n- " + "\n- ".join(names))
+        except Exception:
+            recent_blob = ""
         tool_call_example = '{"tool": "工具名", "args": {}}'
         self.history = [{"role": "system", "content": f"""你是 ComfyUI 生成任务的大脑，帮用户完成图像/视频生成。目标：把用户的自然语言变成高质量的生成结果。
 
@@ -254,6 +272,8 @@ class Brain:
 {tpl_lines}
 
 {capability_blob}
+
+{recent_blob}
 
 ## 任务→工具映射（严格遵守，先匹配再动手；绝大多数请求是单步生成！）
 - **单步生成（"画X"、"生成X"、"生成一张XX风格的图"）→ 直接 run_template(t2i/i2i/style_transfer...)。这是最高频路径，不要为了简单任务去 scaffold/synthesize**
