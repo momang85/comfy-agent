@@ -57,8 +57,20 @@ def pick_local_checkpoint(family: str, knowledge, prefs: dict = None) -> str | N
     return cps[0]
 
 
+def resolve_checkpoint(knowledge, name: str):
+    """返回本机清单里该 checkpoint 的**精确名**（找不到返回 None）。"""
+    try:
+        return knowledge.resolve_model_name(name, folders=["checkpoints"])
+    except AttributeError:
+        return None
+
+
 def checkpoint_exists(knowledge, name: str) -> bool:
-    """checkpoint 是否存在于本机模型清单（ckpt_name 输入只认 checkpoints 目录）。"""
+    """checkpoint 是否存在于本机模型清单（ckpt_name 输入只认 checkpoints 目录）。
+
+    模糊匹配只用于"存在性"判断；写回工作流时必须用 resolve_checkpoint 的精确名。"""
+    if resolve_checkpoint(knowledge, name):
+        return True
     return bool(knowledge.find_model(name, folders=["checkpoints"]))
 
 
@@ -75,21 +87,32 @@ def adapt_ckpt(tpl, params: dict, knowledge) -> tuple[dict, list[str]]:
     default = ckpt_param.default or ""
     explicit = bool(params.get("ckpt"))
     current = params.get("ckpt") or default
-    if not current or checkpoint_exists(knowledge, current):
-        return params, []
+    notes: list[str] = []
+    if not current:
+        return params, notes
+    # 名称归一：把请求名换成清单里的精确形态（分隔符/子目录差异）。
+    # 不做这步会出现"本地校验通过、服务器 value_not_in_list"（实测导致
+    # 每个图像任务失败 2-4 次，style_transfer/upscale_pass 完全不可用）。
+    canon = resolve_checkpoint(knowledge, current)
+    if canon and canon != current:
+        params["ckpt"] = canon
+        notes.append(f"模型名已归一为本机清单形态：{current!r} → {canon!r}")
+        current = canon
+    if checkpoint_exists(knowledge, current):
+        return params, notes
     fam = config.family_of(current)
     if fam not in ADAPTABLE_FAMILIES:
-        return params, []
+        return params, notes
     prefs = config.load_user_settings().get("model_prefs") or {}
     pick = pick_local_checkpoint(fam, knowledge, prefs)
     if pick is None:
-        return params, []
+        return params, notes
     if explicit and config.family_of(pick) != fam:
         # 显式指定的模型缺失：跨家族替换违背用户意图，宁可报缺
-        return params, []
+        return params, notes
     params["ckpt"] = pick
-    notes = [f"模型 {current!r} 本机不存在，已自动适配为本机模型 {pick!r}"
-             f"（{config.family_of(pick)} 家族）"]
+    notes.append(f"模型 {current!r} 本机不存在，已自动适配为本机模型 {pick!r}"
+                 f"（{config.family_of(pick)} 家族）")
     # 默认模型缺失的兜底场景：SDXL 模板落到 SD1.5 模型时，
     # 把默认分辨率收敛到 512（SD1.5 在 1024 上低效易畸变）
     if not explicit and config.family_of(pick) == "sd15" and fam == "sdxl":

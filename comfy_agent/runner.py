@@ -264,6 +264,12 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     params, adapt_notes = adapt_ckpt(tpl, params, knowledge)
     params, guard_notes = _guard_params(tpl, params)
     params, prompt_notes = _apply_prompt_spec(tpl, params)
+    # 输入文件由引擎代传到 ComfyUI /input（大脑常漏这一步，见 problems-detailed P0-4）
+    params, upload_notes, upload_err = _ensure_inputs_uploaded(
+        tpl, params, kw.get("client"))
+    if upload_err:
+        _emit_stage("validation_failed", {"error": upload_err})
+        return {"ok": False, "stage": "render_failed", "error": upload_err}
     ckpt_default = next((p.default for p in tpl.params()
                          if p.name == "ckpt"), None)
     ckpt_ok = bool(params.get("ckpt")) and \
@@ -274,7 +280,7 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
                if not knowledge.find_model(m, folders=_folders_for(m))
                and not (ckpt_ok and m == ckpt_default)]
     all_notes = list(unit_notes) + list(adapt_notes) + list(guard_notes) \
-        + list(prompt_notes)
+        + list(prompt_notes) + list(upload_notes)
     if missing:
         _emit_stage("validation_failed",
                     {"error": f"缺少模型: {missing}"})
@@ -310,6 +316,35 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     if warnings:
         result.setdefault("warnings", []).extend(warnings)
     return result
+
+
+def _ensure_inputs_uploaded(tpl, params: dict, client):
+    """模板声明的输入文件若给的是本机路径，自动上传到 ComfyUI /input。
+
+    实测大脑会漏掉"先 upload_image 送 /input"这一步，导致 LoadImage/LoadVideo
+    在服务器端 value_not_in_list。前置条件由引擎强制，不依赖大脑记忆。
+    返回值：(params, notes, error)。error 非空时调用方直接报错返回。"""
+    decls = getattr(tpl, "input_files", None) or []
+    notes: list[str] = []
+    if not decls:
+        return params, notes, None
+    for pname, _kind in decls:
+        val = params.get(pname)
+        if not isinstance(val, str) or not val.strip():
+            continue
+        p = Path(val)
+        if not p.is_file():
+            continue          # 已是 server 名或不存在 → 交给后续校验
+        try:
+            cli = client or Client()
+            server_name = (cli.upload_image(p) or {}).get("name", p.name)
+        except Exception as e:      # noqa: BLE001 - 上传失败要明确报给大脑
+            return params, notes, (f"{pname} 上传到 ComfyUI /input 失败：{e}。"
+                                   "请确认 ComfyUI 正在运行")
+        params[pname] = server_name
+        notes.append(f"{pname} 已自动上传到 ComfyUI /input："
+                     f"{p.name} → {server_name}")
+    return params, notes, None
 
 
 def _param_of(tpl, name: str):

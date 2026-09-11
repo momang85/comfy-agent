@@ -47,6 +47,23 @@ class Param:
         return d
 
 
+# 输入文件参数声明：这些参数若给的是本机文件路径，由引擎自动上传到
+# ComfyUI /input 并替换为返回的 server 名。
+# 背景（实机实测）：extract_frame/merge_videos 要求文件已在 /input，
+# 文档也写了"先 upload_image"，但大脑会漏掉这一步，服务器以
+# value_not_in_list 拒绝——前置条件必须由引擎强制，而不是靠大脑记忆。
+INPUT_FILE_PARAMS: dict[str, list[tuple[str, str]]] = {
+    "i2i": [("image", "image")],
+    "style_transfer": [("image", "image")],
+    "upscale_pass": [("image", "image")],
+    "inpaint": [("image", "image"), ("mask", "image")],
+    "minimax_i2v": [("image", "image")],
+    "ltx_i2v": [("image", "image")],
+    "extract_frame": [("video", "video")],
+    "merge_videos": [("video1", "video"), ("video2", "video")],
+}
+
+
 class Template:
     """一个模板 = 工作流骨架 + 参数声明 + 注入规则。"""
     id: str = ""                    # 英文标识（CLI 用）
@@ -57,6 +74,11 @@ class Template:
     models_used: list[str] = []     # 依赖的本机模型文件
     est_vram_gb: float = 6.0        # 预估显存
     est_minutes: str = "1-3"        # 预估耗时
+
+    @property
+    def input_files(self) -> list:
+        """输入文件参数声明 [(参数名, 类型)]，见 INPUT_FILE_PARAMS。"""
+        return INPUT_FILE_PARAMS.get(self.id, [])
 
     def params(self) -> list[Param]:
         raise NotImplementedError

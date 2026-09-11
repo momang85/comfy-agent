@@ -341,5 +341,95 @@ class TestMultiToolCalls(unittest.TestCase):
         self.assertEqual(_parse_tool_calls("好的，已完成，无需工具。"), [])
 
 
+class TestHardwareGuard(unittest.TestCase):
+    """GPU 温度熔断（实测渲染期可达 87°C）。"""
+
+    def test_over_limit(self):
+        from comfy_agent import guard
+        self.assertTrue(guard.over_limit(85, 85))
+        self.assertTrue(guard.over_limit(90, 85))
+        self.assertFalse(guard.over_limit(70, 85))
+        self.assertFalse(guard.over_limit(None, 85))      # 读不到温度不误熔断
+        self.assertFalse(guard.over_limit(99, 0))         # 阈值 0 = 关闭
+
+    def test_gpu_temp_readable_or_none(self):
+        from comfy_agent import guard
+        t = guard.gpu_temp_c()
+        self.assertTrue(t is None or 0 < t < 120)
+
+
+class TestInputAutoUpload(unittest.TestCase):
+    """输入文件由引擎代传 /input（P0-4）。"""
+
+    class FakeClient:
+        def __init__(self):
+            self.uploaded = []
+
+        def upload_image(self, path):
+            self.uploaded.append(str(path))
+            return {"name": "uploaded_" + path.name}
+
+    def test_local_path_is_uploaded_and_replaced(self):
+        import tempfile
+        from pathlib import Path as P
+        from comfy_agent.runner import _ensure_inputs_uploaded
+        from comfy_agent.templates import get_template
+        with tempfile.TemporaryDirectory() as d:
+            f = P(d) / "seg1.mp4"
+            f.write_bytes(b"x")
+            cli = self.FakeClient()
+            tpl = get_template("extract_frame")
+            params, notes, err = _ensure_inputs_uploaded(
+                tpl, {"video": str(f), "frame_index": 3}, cli)
+        self.assertIsNone(err)
+        self.assertEqual(params["video"], "uploaded_seg1.mp4")
+        self.assertEqual(cli.uploaded and len(cli.uploaded), 1)
+        self.assertTrue(notes and "自动上传" in notes[0])
+
+    def test_server_name_left_untouched(self):
+        from comfy_agent.runner import _ensure_inputs_uploaded
+        from comfy_agent.templates import get_template
+        cli = self.FakeClient()
+        params, notes, err = _ensure_inputs_uploaded(
+            get_template("merge_videos"),
+            {"video1": "seg1.mp4", "video2": "seg2.mp4"}, cli)
+        self.assertIsNone(err)
+        self.assertEqual(cli.uploaded, [])          # 已是 server 名，不再上传
+        self.assertEqual(params["video1"], "seg1.mp4")
+
+    def test_upload_failure_reported(self):
+        from comfy_agent.runner import _ensure_inputs_uploaded
+        from comfy_agent.templates import get_template
+
+        class Boom:
+            def upload_image(self, path):
+                raise RuntimeError("连接被拒绝")
+
+        import tempfile
+        from pathlib import Path as P
+        with tempfile.TemporaryDirectory() as d:
+            f = P(d) / "a.mp4"
+            f.write_bytes(b"x")
+            params, notes, err = _ensure_inputs_uploaded(
+                get_template("extract_frame"), {"video": str(f)}, Boom())
+        self.assertIn("上传到 ComfyUI /input 失败", err)
+
+
+class TestVideoOomSuggestion(unittest.TestCase):
+    """视频 OOM 也要能自动降参（原先只认 EmptyLatent*）。"""
+
+    def test_video_nodes_reduced(self):
+        from comfy_agent.repair import suggest_for_execution_error
+        api = {"1": {"class_type": "MiniMaxH3ImageToVideo", "inputs": {
+            "width": 768, "height": 448, "length": 124, "prompt": "x"}}}
+        s = suggest_for_execution_error({"message": "CUDA out of memory"}, api)
+        self.assertTrue(s and s.get("applied"), s)
+        got = api["1"]["inputs"]
+        self.assertLess(got["width"], 768)
+        self.assertLessEqual(got["height"], 448)
+        self.assertEqual(got["length"], 62)
+        self.assertEqual(got["width"] % 32, 0)      # 视频分辨率需 32 对齐
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

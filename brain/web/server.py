@@ -141,15 +141,31 @@ class WebSession:
         t2.start()
 
     def _vram_poller(self):
+        last_trip = 0.0
         while True:
             try:
                 s = self.session_for(None)
                 stats = s.brain.ctx.client.system_stats()
+                from comfy_agent import guard
+                temp = guard.gpu_temp_c()
                 for d in stats.get("devices", []):
                     ev.emit("vram", {
                         "total_gb": round(d.get("vram_total", 0) / 1e9, 1),
                         "free_gb": round(d.get("vram_free", 0) / 1e9, 1),
+                        "temp_c": temp,
                         "name": d.get("name", "")[:30]})
+                # 温度熔断：超限自动中断任务并告知用户（实测渲染期可达 87°C）
+                if guard.over_limit(temp) and time.time() - last_trip > 60:
+                    last_trip = time.time()
+                    try:
+                        s.brain.ctx.client.interrupt()
+                    except Exception:
+                        pass
+                    msg = (f"GPU 温度 {temp:.0f}°C 已达熔断阈值 "
+                           f"{guard.GPU_TEMP_LIMIT:.0f}°C，已自动中断当前任务以保护设备。"
+                           "请等待降温后重试（可降低分辨率/帧数）。"
+                           "阈值可用环境变量 GPU_TEMP_LIMIT 调整。")
+                    ev.emit("error", {"message": msg})
             except Exception:
                 pass
             time.sleep(3)

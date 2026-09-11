@@ -232,6 +232,32 @@ class Knowledge:
     def all_checkpoints(self) -> list[str]:
         return list(self.models.get("checkpoints", []))
 
+    def resolve_model_name(self, name: str, folders: list[str] = None):
+        """把请求的模型名解析为本机清单里的**精确条目**（分隔符不敏感匹配）。
+
+        模板默认值用 POSIX 分隔符以保持跨平台，而 ComfyUI 的枚举在 Windows 上
+        是反斜杠形态；提交前必须换成清单里的原始字符串，否则服务器报
+        value_not_in_list（实测：同一模型 `/` 形态被拒、`\\` 形态成功）。
+        解析不到返回 None。"""
+        if not name:
+            return None
+        target = str(name).lower().replace("\\", "/")
+
+        def _search(compare) -> Optional[str]:
+            for folder, files in self.models.items():
+                if folders and folder not in folders:
+                    continue
+                for f in files:
+                    if compare(str(f).lower().replace("\\", "/")):
+                        return str(f)
+            return None
+
+        hit = _search(lambda f: f == target)
+        if hit:
+            return hit
+        base = target.rsplit("/", 1)[-1]
+        return _search(lambda f: f.rsplit("/", 1)[-1] == base)
+
     def summary_for_llm(self) -> str:
         """给 LLM 的知识摘要（控制篇幅）。"""
         lines = [f"本机 ComfyUI 共 {len(self.snapshot)} 个节点类。"]

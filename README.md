@@ -48,6 +48,11 @@ ComfyUI (127.0.0.1:8188，绘世启动器启动)
 Windows 用户：`install.bat`（填一次 ComfyUI 路径）→ `一键启动.bat` → ⚙ 填 key，三步完成。
 Linux/macOS 用户：`COMFY_ROOT=/path/to/ComfyUI LLM_API_KEY=sk-... python -m brain --web`（无需 bat 脚本）。
 
+> **显存模式**：`一键启动.bat` 默认使用 ComfyUI 的**动态显存**（12GB 卡跑大模型的唯一可行路径）。
+> 需要图像场景极致速度时用 `一键启动_高显存.bat`——它会传 `--highvram`（模型常驻显存），
+> **视频任务（MiniMax H3 等 ~20GB 模型）用它会让 ComfyUI 崩溃**。
+> 服务侧另有 GPU 温度熔断（`GPU_TEMP_LIMIT`，默认 85°C 自动中断任务保护设备）。
+
 ### 2. 引擎层（无需 LLM）
 
 ```bash

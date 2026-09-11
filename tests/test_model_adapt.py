@@ -146,6 +146,30 @@ class TestAdaptCkpt(unittest.TestCase):
         params, notes = adapt_ckpt(self.T2I(self.SDXL), {"ckpt": "   "}, k)
         self.assertNotIn("ckpt", params)
 
+    def test_posix_name_normalized_to_listing_form(self):
+        """P0-1 回归：模板默认用 POSIX 分隔符，提交前必须归一为清单形态。
+
+        实测不归一会出现"本地校验通过、服务器 value_not_in_list"，
+        导致每个图像任务失败 2-4 次、style_transfer/upscale_pass 不可用。"""
+        from comfy_agent.model_adapt import adapt_ckpt, resolve_checkpoint
+        listing = "sdXL\\novaAnimeXL_ilV180.safetensors"   # Windows 清单形态
+        posix = listing.replace("\\", "/")                 # 模板默认形态
+        k = _k([listing])
+        self.assertEqual(resolve_checkpoint(k, posix), listing)
+        params, notes = adapt_ckpt(self.T2I(posix), {"ckpt": posix}, k)
+        self.assertEqual(params["ckpt"], listing)
+        self.assertTrue(any("归一" in n for n in notes), notes)
+
+    def test_default_posix_normalized_without_user_param(self):
+        """用户没传 ckpt 时，模板默认值同样要被归一。"""
+        from comfy_agent.model_adapt import adapt_ckpt
+        listing = "sdXL\\novaAnimeXL_ilV180.safetensors"
+        posix = listing.replace("\\", "/")
+        k = _k([listing])
+        params, notes = adapt_ckpt(self.T2I(posix), {}, k)
+        self.assertEqual(params.get("ckpt"), listing)
+        self.assertTrue(any("归一" in n for n in notes), notes)
+
 
 class RecordingClient:
     """记录提交的工作流（复用 test_runner.FakeClient 行为）。"""

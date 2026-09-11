@@ -639,9 +639,11 @@ function handleEvent(msg) {
       addMemoryBadge("历史经验已注入");
       break;
     case "vram": {
-      const used = data.total_gb - data.free_gb;
-      vramEl.textContent = `GPU ${data.free_gb.toFixed(1)}/${data.total_gb.toFixed(1)} GB`;
+      // 显存 + 温度（渲染期唯一可见的硬件指标；熔断状态用 hot 高亮）
+      const t = (typeof data.temp_c === "number") ? ` ${Math.round(data.temp_c)}°C` : "";
+      vramEl.textContent = `GPU ${data.free_gb.toFixed(1)}/${data.total_gb.toFixed(1)} GB${t}`;
       vramEl.classList.toggle("low", data.free_gb < 2);
+      vramEl.classList.toggle("hot", typeof data.temp_c === "number" && data.temp_c >= 85);
       break;
     }
     case "progress":

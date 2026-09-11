@@ -154,8 +154,9 @@ def validate_workflow(api: dict, knowledge: Knowledge) -> list[ValidationIssue]:
                     if is_image_input:
                         suggestion = None
                     elif is_file_enum:
-                        suggestion = {"enum": _closest_same_family(
-                            str(val).replace("\\", "/"), choices_norm)}
+                        # 建议值必须用清单**原始形态**（Windows 上是反斜杠）：
+                        # 用归一化副本写回会被服务器再次拒收（实测死循环根因）
+                        suggestion = {"enum": _closest_same_family(str(val), choices)}
                     else:
                         suggestion = {"enum": _closest(str(val), choices)}
                     issues.append(ValidationIssue(
@@ -230,20 +231,22 @@ def _folder_of_input(knowledge: Knowledge, cls: str, input_name: str) -> Optiona
 
 def _closest_same_family(val: str, choices: list[str]) -> Optional[str]:
     """同家族模糊匹配：VAE 只匹配 VAE 类、LoRA 只匹配 LoRA 类等。
-    防止把丢失的 SDXL VAE '修复'成 minimax 音频 VAE 这类跨家族错配。
-    家族判定：文件名中的关键词必须与候选共享（sdxl/sd15/ltx/minimax 等），
-    或候选与原文件语义同名（sdxlVAE -> sdxl_vae）。"""
+
+    返回**清单里的原始字符串**（保留分隔符形态），因为服务器只接受原始形态。
+    比较时把两侧都归一为 `/`，避免 Windows/Linux 分隔符差异导致误判。"""
     from difflib import SequenceMatcher
     fam_keywords = ("sdxl", "sd15", "sd1.5", "ltx", "minimax", "wan", "flux",
                     "anything", "nova", "qwen", "gemma")
-    val_fams = {f for f in fam_keywords if f in val.lower()}
+    val_n = str(val).lower().replace("\\", "/")
+    val_fams = {f for f in fam_keywords if f in val_n}
     best, best_score = None, 0.0
     for c in choices:
-        c_fams = {f for f in fam_keywords if f in c.lower()}
+        c_n = str(c).lower().replace("\\", "/")
+        c_fams = {f for f in fam_keywords if f in c_n}
         # 家族不相交且双方都有家族标记 -> 跳过（跨家族不匹配）
         if val_fams and c_fams and not (val_fams & c_fams):
             continue
-        s = SequenceMatcher(None, val.lower(), c.lower()).ratio()
+        s = SequenceMatcher(None, val_n, c_n).ratio()
         if s > best_score:
             best, best_score = c, s
     return best if best_score > 0.4 else None

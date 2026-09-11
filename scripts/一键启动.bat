@@ -90,7 +90,12 @@ if not exist "%PY%" (
   echo   [ERROR] embedded python not found: %PY%
   pause & exit /b 1
 )
-start "ComfyUI" /D "%COMFY_ROOT%" /MIN cmd /c ""%PY%" -B "%MAIN%" --highvram --reserve-vram 1.5 --force-channels-last --preview-method auto --fast > "%LOG_DIR%\comfyui.log" 2>&1"
+REM VRAM mode: default = ComfyUI dynamic VRAM (safe for large video models on 12GB).
+REM Set COMFY_VRAM_MODE=high to pin models in VRAM (image-only workloads, much faster
+REM but CRASHES with big video models such as MiniMax H3 INT8 ~20GB).
+set "VRAM_FLAG="
+if /I "%COMFY_VRAM_MODE%"=="high" set "VRAM_FLAG=--highvram"
+start "ComfyUI" /D "%COMFY_ROOT%" /MIN cmd /c ""%PY%" -B "%MAIN%" !VRAM_FLAG! --reserve-vram 1.5 --force-channels-last --preview-method auto --fast > "%LOG_DIR%\comfyui.log" 2>&1"
 echo   Waiting for ComfyUI ready...
 set /a TRIES=0
 :wait_comfy

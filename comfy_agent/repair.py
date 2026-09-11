@@ -211,6 +211,23 @@ def suggest_for_execution_error(err: dict, api: dict) -> Optional[dict]:
 
     if "out of memory" in msg or "oom" in msg or "alloc" in msg:
         suggestions = []
+        # 视频节点类：EmptyLatent* 之外，视频模板用这些节点承载分辨率/帧数
+        video_nodes = ("MiniMaxH3ImageToVideo", "EmptyMiniMaxH3LatentAV",
+                       "LTXVImgToVideo")
+        for nid, n in api.items():
+            if n["class_type"] not in video_nodes:
+                continue
+            ins = n["inputs"]
+            for k in ("width", "height"):
+                v = ins.get(k)
+                if isinstance(v, int) and v > 256:
+                    ins[k] = max(256, int(v * 0.6) // 32 * 32)
+                    suggestions.append(f"#{nid} {k} {v}->{ins[k]}（视频降分辨率）")
+            ln = ins.get("length")
+            if isinstance(ln, int) and ln > 32:
+                ins["length"] = max(32, ln // 2)
+                suggestions.append(f"#{nid} length {ln}->{ins['length']}"
+                                   "（帧数减半）")
         # 降分辨率：找 EmptyLatentImage / EmptySD3LatentImage 等
         for nid, n in api.items():
             if n["class_type"] in ("EmptyLatentImage", "EmptySD3LatentImage",
@@ -233,8 +250,8 @@ def suggest_for_execution_error(err: dict, api: dict) -> Optional[dict]:
                 suggestions.append(f"#{nid} batch {b}->{n['inputs']['batch_size']}")
         if suggestions:
             return {"type": "oom", "applied": suggestions}
-        return {"type": "oom", "advice": "显存不足且无可降参数：建议换低显存启动脚本"
-                "（run_lowvram.bat）或更小的模型"}
+        return {"type": "oom", "advice": "显存不足且无可降参数：建议用默认（动态）显存"
+                "模式重启 ComfyUI（运行 一键启动.bat 会自动拉起），或换更小的模型"}
 
     if "shape" in msg or "size mismatch" in msg:
         if node:
