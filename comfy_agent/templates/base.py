@@ -96,7 +96,7 @@ class Template:
         return out
 
     def normalize_params(self, p: dict) -> tuple[dict, list[str]]:
-        """参数规范化：别名 → 主名（帧/秒、duration 等歧义名收敛）。
+        """参数规范化：别名 → 主名；非法选项值 → 模板推荐值收敛。
 
         返回 (规范化后的参数, 说明列表)。子类可覆盖做单位换算。"""
         out, notes = dict(p or {}), []
@@ -109,6 +109,26 @@ class Template:
                     notes.append(f"参数 {al} 已按别名映射为 {prm.name}")
                 else:
                     out.pop(al)      # 主名已给出：丢弃别名键，避免"未识别参数"告警
+        # 选项参数收敛：非法值按 recommended → default → choices[0] 回落。
+        # 实测大脑会把采样器与调度器并成一个值（dpmpp_2m_karras）；若交给
+        # 下游的"字符串相似度"修复，会被改成 dpmpp_2m_sde（特性不同），
+        # 这里优先回落到模板自己的推荐值。
+        for prm in self.params():
+            if prm.ptype != "choice" or not prm.choices:
+                continue
+            val = out.get(prm.name)
+            if val is None or val in prm.choices:
+                continue
+            fallback = None
+            for cand in (prm.recommended, prm.default, prm.choices[0]):
+                if cand in prm.choices:
+                    fallback = cand
+                    break
+            if fallback is None:
+                continue
+            out[prm.name] = fallback
+            notes.append(f"参数 {prm.name}={val!r} 不是合法选项，"
+                         f"已回落为模板推荐值 {fallback!r}")
         return out, notes
 
     def to_dict(self):

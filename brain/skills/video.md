@@ -7,7 +7,9 @@
 
 ## 模板选择
 - 纯文字生成视频（可中文）→ `minimax_t2v`（Qwen3VL 编码器+turbo 8步）
-- 有首帧图让画面动起来 → `minimax_i2v`（MiniMax H3，音画同生）
+- 有首帧图让画面动起来 → `minimax_i2v`（MiniMax H3）
+  （注意：本机链路目前只输出**视频轨**，提示词里的音效描述不会生成音频；
+  要音频需把 `VAEDecodeAudio` 接到 `CreateVideo` 的 audio 输入，尚未验证）
 - 首帧图+更电影感（英文提示词强）→ `ltx_i2v`（22B 蒸馏+本地 Gemma）
 
 ## 提示词

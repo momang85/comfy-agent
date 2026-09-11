@@ -63,7 +63,8 @@ class MiniMaxVideoBase(_LengthUnitsMixin, Template):
         return [
             Param("prompt", "str", "", "视频描述", required=True,
                   desc="自然语言描述（Qwen3VL 编码器，中文可用）。"
-                       "要写动作/镜头/音效，不要写成逗号标签堆砌"),
+                       "要写动作/镜头/音效，不要写成逗号标签堆砌。"
+                       "注意：本机链路目前只输出视频轨，提示词里的音效描述不会生成音频"),
             Param("width", "int", 768, "宽", minv=256, maxv=1344),
             Param("height", "int", 448, "高", minv=256, maxv=768),
             Param("length", "int", 124, "帧数", minv=5, maxv=3600,

@@ -194,6 +194,7 @@ def _force_image_evaluation(result: dict, outs: list) -> None:
         result["evaluation"] = d
         emit("evaluation", {
             "kind": "image_forced", "verdict": verdict,
+            "prompt_id": result.get("prompt_id"),
             "score": (d.get("vlm") or [{}])[0].get("score")
             if d.get("vlm") else None,
             "issues": [
@@ -229,6 +230,7 @@ def _force_video_evaluation(result: dict, outs: list) -> None:
         d["verdict"] = verdict
         result["evaluation"] = d
         emit("evaluation", {"kind": "video_forced", "verdict": verdict,
+                            "prompt_id": result.get("prompt_id"),
                             "score": (d.get("vlm") or [{}])[0].get("score")
                             if d.get("vlm") else None,
                             "issues": [

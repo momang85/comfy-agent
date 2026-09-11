@@ -539,15 +539,26 @@ function setStage(stage, failed) {
 }
 
 function addEvalCard(ev) {
+  const html = renderEvalCard(ev);
+  // 同一 prompt_id 只保留一张评估卡（引擎强制评估 + 大脑 view_* 会重复上报）
+  if (ev.prompt_id) {
+    const old = evalsEl.querySelector(`[data-pid="${ev.prompt_id}"]`);
+    if (old) { old.innerHTML = html; return; }
+  }
   const d = document.createElement("div");
   d.className = "card";
+  if (ev.prompt_id) d.dataset.pid = ev.prompt_id;
+  d.innerHTML = html;
+  evalsEl.prepend(d);
+}
+
+function renderEvalCard(ev) {
   const score = ev.score != null ? `（${ev.score}/10）` : "";
   const cls = ev.verdict === true ? "eval-pass" : ev.verdict === false ? "eval-fail" : "";
-  d.innerHTML = `<h4>${ev.kind === "video" || ev.kind === "video_forced" ? "🎬 视频评估" : "🖼 图像评估"}
+  return `<h4>${ev.kind === "video" || ev.kind === "video_forced" ? "🎬 视频评估" : "🖼 图像评估"}
     <span class="${cls}">${ev.verdict === true ? "通过" : ev.verdict === false ? "不达标" : "未知"}${score}</span></h4>` +
     (ev.issues || []).map((i) =>
       `<div class="issue"><span class="loc">${escapeHtml(i.location || "")}</span> ${escapeHtml(i.description || "")}</div>`).join("");
-  evalsEl.prepend(d);
 }
 
 function addMemoryBadge(text) {

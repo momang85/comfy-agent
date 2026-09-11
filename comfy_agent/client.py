@@ -96,7 +96,16 @@ class Client:
         except urllib.error.URLError as e:
             raise ComfyUIError(
                 f"无法连接 ComfyUI（{self.base}）：{e.reason}。"
-                "请先通过绘世启动器启动 ComfyUI。", {}) from e
+                "请运行 scripts\\一键启动.bat（会自动检测并拉起 ComfyUI），"
+                "或在绘世启动器里启动 ComfyUI 后重试。", {}) from e
+
+    def is_alive(self, timeout: float = 4.0) -> bool:
+        """ComfyUI 是否存活（供引擎/服务做进程级健康检查）。"""
+        try:
+            self.get("/system_stats", timeout=timeout)
+            return True
+        except Exception:
+            return False
 
     def get(self, path: str, **kw):
         return self._request("GET", path, **kw)

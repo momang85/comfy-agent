@@ -188,13 +188,53 @@ def tool_fetch_outputs(ctx: ToolContext, args: dict) -> dict:
             "local_paths": local}
 
 
+def _latest_project_outputs(ctx: ToolContext, exts) -> list:
+    """项目内最近一次产物（按 mtime 降序，最多 4 个）。
+
+    实测 use_last 只看"最近一次运行"，中间一次失败就把引用覆盖掉，
+    导致"项目里明明有 3 个 mp4 却报没有视频"。"""
+    try:
+        root = ctx.project.outputs_dir() if ctx.project else None
+    except Exception:
+        root = None
+    if not root or not root.exists():
+        return []
+    files = [f for f in root.rglob("*")
+             if f.is_file() and f.suffix.lower() in exts]
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    return [str(f) for f in files[:4]]
+
+
+def _engine_eval_reuse(ctx: ToolContext, paths: list) -> dict | None:
+    """若引擎已对同一批产物评估且通过，返回可复用的结论（否则 None）。
+
+    避免同一产物被评估两次且结论冲突（引擎通用 criteria vs 大脑任务
+    criteria），也省掉一次 VLM 调用。"""
+    le = ctx.draft_meta.get("last_eval") or {}
+    if not le or le.get("verdict") is not True:
+        return None
+    target = {str(p) for p in paths}
+    known = {str(p) for p in (le.get("files") or [])}
+    if not target or not (target & known):
+        return None
+    return {"ok": True, "pass_overall": True, "skipped": True,
+            "note": ("引擎已自动评估该产物并通过"
+                     f"（分数 {le.get('score')}），未重复调用 VLM。"
+                     "如需任务专属判定请显式传入 paths 重新评估。"),
+            "engine_eval": le}
+
+
 def tool_view_image(ctx: ToolContext, args: dict) -> dict:
     """视觉评估图片（分层：Tier0 免费 + 云端VLM 区域级诊断）。
     args: {paths: [...], use_last?: true, criteria: "要求描述", sample?: 3}
     use_last=true 时评估上一次生成的产物（避免手写路径出错）。
     注意：ok 表示评估工具本身是否成功执行；评估结论在 pass_overall。"""
     if args.get("use_last"):
-        last = ctx.draft_meta.get("last_outputs") or []
+        last = [p for p in (ctx.draft_meta.get("last_outputs") or [])
+                if str(p).lower().endswith((".png", ".jpg", ".jpeg", ".webp"))]
+        if not last:
+            last = _latest_project_outputs(
+                ctx, (".png", ".jpg", ".jpeg", ".webp"))   # 回退：项目内最近图
         if not last:
             return {"ok": False,
                     "error": "没有上一轮产物（先 run_template/submit+fetch）"}
@@ -203,6 +243,10 @@ def tool_view_image(ctx: ToolContext, args: dict) -> dict:
         paths = args.get("paths", [])
     if not paths:
         return {"ok": False, "error": "缺少 paths（或 use_last=true）"}
+    if args.get("use_last"):
+        reuse = _engine_eval_reuse(ctx, paths)     # 引擎已评估通过 → 不重复调 VLM
+        if reuse:
+            return reuse
     criteria = args.get("criteria", "")
     result = evaluate(paths, criteria, sample=args.get("sample"))
     d = result.to_dict()
@@ -348,6 +392,17 @@ def tool_run_template(ctx: ToolContext, args: dict) -> dict:
         result["server_images"] = [
             o.get("filename") for o in result.get("outputs", [])
             if o.get("filename")]
+        # 引擎已在 run_workflow 末尾做过强制评估：记下来供 view_image/view_video
+        # 复用（实测引擎 9/10 通过、大脑自评 6/10 → 无谓重生成 3 段视频）
+        ev_res = result.get("evaluation") or {}
+        if ev_res and "error" not in ev_res:
+            ctx.draft_meta["last_eval"] = {
+                "prompt_id": result.get("prompt_id"),
+                "verdict": ev_res.get("verdict"),
+                "score": (ev_res.get("vlm") or [{}])[0].get("score")
+                if ev_res.get("vlm") else None,
+                "files": [str(p) for p in ctx.draft_meta["last_outputs"]],
+            }
         ctx.trajectory.append({"action": "run", "template": tid,
                                "ok": True, "params": params})
     else:
@@ -363,6 +418,14 @@ def tool_view_video(ctx: ToolContext, args: dict) -> dict:
         last = ctx.draft_meta.get("last_outputs") or []
         vids = [p for p in last
                 if str(p).lower().endswith((".mp4", ".webm", ".mkv", ".mov"))]
+        if not vids:
+            # 回退：扫项目产物目录里最近的视频（实测中间失败会清掉 last_outputs）
+            vids = _latest_project_outputs(
+                ctx, (".mp4", ".webm", ".mkv", ".mov"))
+        if vids:
+            reuse = _engine_eval_reuse(ctx, vids)
+            if reuse:
+                return reuse
         if not vids:
             return {"ok": False,
                     "error": "上一轮产物中没有视频（先跑视频模板）"}

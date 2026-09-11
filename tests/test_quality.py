@@ -431,5 +431,63 @@ class TestVideoOomSuggestion(unittest.TestCase):
         self.assertEqual(got["width"] % 32, 0)      # 视频分辨率需 32 对齐
 
 
+class TestChoiceSnapAndEvalReuse(unittest.TestCase):
+    """P1-1 非法选项回落模板推荐值；P1-2/P1-4 评估复用与 use_last 回退。"""
+
+    def test_choice_snaps_to_template_default(self):
+        from comfy_agent.templates.image import T2I, SDXL_CKPT
+        out, notes = T2I(SDXL_CKPT).normalize_params(
+            {"prompt": "x", "sampler": "dpmpp_2m_karras"})
+        self.assertEqual(out["sampler"], "dpmpp_2m")     # 模板默认，而非相似串
+        self.assertTrue(any("回落" in n for n in notes), notes)
+
+    def test_valid_choice_untouched(self):
+        from comfy_agent.templates.image import T2I, SDXL_CKPT
+        out, notes = T2I(SDXL_CKPT).normalize_params(
+            {"prompt": "x", "sampler": "euler"})
+        self.assertEqual(out["sampler"], "euler")
+        self.assertFalse(any("回落" in n for n in notes), notes)
+
+    def test_engine_eval_reuse_when_passed(self):
+        from brain.tools import ToolContext, _engine_eval_reuse
+        ctx = ToolContext()
+        ctx.draft_meta["last_eval"] = {"prompt_id": "p1", "verdict": True,
+                                       "score": 9, "files": ["a.mp4"]}
+        got = _engine_eval_reuse(ctx, ["a.mp4"])
+        self.assertTrue(got and got["skipped"] and got["pass_overall"])
+
+    def test_no_reuse_when_failed_or_mismatch(self):
+        from brain.tools import ToolContext, _engine_eval_reuse
+        ctx = ToolContext()
+        ctx.draft_meta["last_eval"] = {"prompt_id": "p1", "verdict": False,
+                                       "score": 4, "files": ["a.mp4"]}
+        self.assertIsNone(_engine_eval_reuse(ctx, ["a.mp4"]))   # 未通过 → 允许复评
+        ctx.draft_meta["last_eval"] = {"verdict": True, "files": ["other.mp4"]}
+        self.assertIsNone(_engine_eval_reuse(ctx, ["a.mp4"]))   # 不是同一产物
+
+    def test_latest_project_outputs_scans_project(self):
+        import tempfile
+        from pathlib import Path as P
+        from brain.tools import ToolContext, _latest_project_outputs
+
+        class Proj:
+            def __init__(self, d):
+                self._d = P(d)
+
+            def outputs_dir(self):
+                return self._d
+
+        with tempfile.TemporaryDirectory() as d:
+            sub = P(d) / "run1"
+            sub.mkdir()
+            (sub / "a.mp4").write_bytes(b"1")
+            (sub / "b.png").write_bytes(b"2")
+            ctx = ToolContext()
+            ctx.project = Proj(d)
+            vids = _latest_project_outputs(ctx, (".mp4",))
+        self.assertEqual(len(vids), 1)
+        self.assertTrue(vids[0].endswith("a.mp4"))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
