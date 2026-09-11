@@ -62,3 +62,38 @@
 | 任务间空闲 | 57-63°C | 模型自动卸载 |
 
 全程未出现 ≥92°C；无人工中断（本轮），全部由护栏按设计处理。
+
+---
+
+## 六、遗留测试补跑（同日追加）
+
+### B5 续到 15 秒：链路跑通，但**产物时长不符**
+
+- 实际动作：取末帧（`agent_frame_00005_.png`，引擎自动上传 ✓）→ `minimax_i2v` 第三段（`agent_minimax_00012_.mp4`，5.17 秒 ✓）→ `merge_videos`
+- **结果偏差**：请求是"把这三段合成约 15 秒"，产物 `agent_merged_00005_.mp4` 实测 **10.33 秒 / 248 帧**（= 5.17 + 5.17）
+- 证据（事件原文）：`START merge_videos {"video1": "agent_minimax_00011_.mp4", "video2": "agent_minimax_00012_.mp4"}`
+  —— 大脑合的是**两段单段视频**，而不是"已有的 10.33 秒合成片 + 新的第三段"（那才是 15.5 秒）
+- 判断：**数量/集成偏差**（与轮次 1 的"放大→重画"同族）。根因是链条缺少"目标时长核对"：
+  引擎评估视频时只抽帧看画质，不回报时长；大脑因此无法自查"够不够 15 秒"
+- 建议修法：`runner` 在视频产物落盘后用 ffprobe 回报 `duration_sec`（ffmpeg 已在用），
+  大脑交付前比对该值与用户要求；或 `merge_videos` 增加 `target_seconds` 参数，不足时提示还需要接哪一段
+
+### LTX 模板（ltx_i2v）实测：**因环境不可达未能执行**
+
+- 消息已接收，但大脑一个工具都没调用就结束了；`history.jsonl` 记录：
+  `ERROR: LLMError: 无法连接 LLM 服务（https://api.z.ai/api/paas/v4）: [WinError 10061] 由于目标计算机积极拒绝，无法连接`
+- 根因：**代理关闭后国际站 api.z.ai 不可达**（B5 期间还通，随后断网/断代理）。属环境问题，非代码缺陷
+- 顺带确认：新的错误处理路径**生效**——发出 `ERROR` 事件并复位到 `idle`，前端会显示错误卡，不再静默卡在"构建中"
+- **模型齐备性已核验**（LTX 可跑的前提都在）：`checkpoints/ltx-2.3-22b-distilled-1.1.safetensors` ✓、
+  `loras/ltx-2.3-22b-distilled-lora-384-1.1.safetensors` ✓、`text_encoders/gemma-3-12b-it-...` 两分片 ✓
+- **待查的设计风险**（供下次实测重点验证）：`comfy_agent/templates/video.py` 的 LTX 链用
+  `CheckpointLoaderSimple(LTX_CKPT)` 的 **槽 1 取 CLIP**，而 LTX-2.x 的文本编码器是 text_encoders 里**独立的 Gemma-3 分片**——
+  模板没有加载它。该链路很可能在服务器端直接失败（clip 类型/权重不匹配），需在 LLM 可用时实测定性
+
+### 本轮补跑的另外两点观察
+
+- 自动上传（P0-4）在每一步都生效：`image/video/video1/video2 已自动上传到 ComfyUI /input`
+- 视频评估出现 `verdict=False, score=8`（画质分尚可但被判不通过）：引擎用的是**通用 criteria**
+  （"视频帧质量良好、动作连贯无明显畸形"），对"橘猫是否真的走了两步"这类**任务语义**天然判不准——
+  这也是上方 B5 数量偏差未被拦下的原因之一
+
