@@ -156,6 +156,16 @@ class WebSession:
                         "temp_c": temp,
                         "name": d.get("name", "")[:30]})
                 # 温度熔断：超限自动中断任务并告知用户（实测渲染期可达 87°C）
+                # 温度两级护栏：WARN 只提醒一次/2分钟；LIMIT 才中断任务
+                # （实测本机视频渲染常态 80-86°C、峰值 89°C，单级 85°C 会误杀）
+                if temp is not None and guard.GPU_TEMP_LIMIT > 0 \
+                        and guard.GPU_TEMP_WARN <= temp < guard.GPU_TEMP_LIMIT \
+                        and time.time() - last_trip > 120:
+                    last_trip = time.time()
+                    ev.emit("stage", {"stage": "warning", "detail": {
+                        "warning": f"GPU 温度 {temp:.0f}°C 偏高（熔断线 "
+                                   f"{guard.GPU_TEMP_LIMIT:.0f}°C），已提醒；"
+                                   "如持续升高任务会被自动中断"}})
                 if guard.over_limit(temp) and time.time() - last_trip > 60:
                     last_trip = time.time()
                     try:

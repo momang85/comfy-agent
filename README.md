@@ -51,7 +51,7 @@ Linux/macOS 用户：`COMFY_ROOT=/path/to/ComfyUI LLM_API_KEY=sk-... python -m b
 > **显存模式**：`一键启动.bat` 默认使用 ComfyUI 的**动态显存**（12GB 卡跑大模型的唯一可行路径）。
 > 需要图像场景极致速度时用 `一键启动_高显存.bat`——它会传 `--highvram`（模型常驻显存），
 > **视频任务（MiniMax H3 等 ~20GB 模型）用它会让 ComfyUI 崩溃**。
-> 服务侧另有 GPU 温度熔断（`GPU_TEMP_LIMIT`，默认 85°C 自动中断任务保护设备）。
+> 服务侧另有 GPU 温度熔断（`GPU_TEMP_LIMIT`，默认 88°C 自动中断任务保护设备；实测视频渲染常态 80-86°C，阈值过低会误中断）。
 
 ### 2. 引擎层（无需 LLM）
 
