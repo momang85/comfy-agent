@@ -662,6 +662,12 @@ function handleEvent(msg) {
       }
       currentMsg = null;
       setStage("completed");
+      // 本轮成本可见：渲染几次、其中几次被判定为浪费（结构性护栏拦下的）
+      if (data.task && data.task.renders != null) {
+        const t = data.task;
+        statusEl.textContent = `完成 · 渲染 ${t.renders} 次` +
+          (t.wasted ? ` · 其中拦截/浪费 ${t.wasted} 次` : "");
+      }
       refreshGallery();   // 新产物自动出现（无需手动刷新页面）
       break;
     }
@@ -792,6 +798,32 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) healthCheck();   // 标签页从休眠恢复时立即自检
 });
 
+$("#refreshworld").addEventListener("click", async () => {
+  const btn = $("#refreshworld");
+  btn.disabled = true;
+  statusEl.textContent = "重扫节点与模型清单…";
+  try {
+    const r = await fetch("/api/refresh", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ project_id: activeProject ? activeProject.id : null }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      const folders = Object.entries(d.model_folders || {})
+        .map(([f, n]) => `${f}:${n}`).join(" ");
+      statusEl.textContent = `已重扫 · 节点 ${d.nodes} · ${folders}`;
+      if (d.changed) showWarning("世界清单已更新（新下载的模型/新节点现在可见）");
+    } else {
+      statusEl.textContent = "重扫失败：" + (d.error || "");
+    }
+  } catch (e) {
+    statusEl.textContent = "重扫请求失败";
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // ---------- 缺失模型下载弹窗 ----------
 // 大脑发现缺模型 → search_models → download_model 弹出本弹窗；用户点"下载"
 // 后同一弹窗内变成进度条（含速度/取消），结束后关闭或展示失败原因。
@@ -822,13 +854,22 @@ function showModelDownload(rec) {
   }
   mdlRec = rec;
   const body = $("#mdl_body");
+  const cons = rec.consumer || {};
   body.innerHTML =
     mdlRow("文件", rec.filename) +
     mdlRow("名称", rec.name && rec.name !== rec.filename ? rec.name : "—") +
     mdlRow("大小", rec.size_text || "未知") +
     mdlRow("来源", MDL_SOURCES[rec.source] || rec.source || "未知") +
     mdlRow("适配", rec.fit && rec.fit.fits ? "适配本机" : "不适合本机") +
+    mdlRow("加载节点", cons.loader
+      ? `${cons.loader}${cons.loader_present === false ? "（本机没有）" : ""}`
+      : (cons.candidates && cons.candidates.length ? "未找到可用节点" : "无需加载节点")) +
     mdlRow("存放目录", rec.target_dir || rec.dest || "—");
+  // 下完也用不了的情况必须先说清（项目 5：下了 21MB 才发现没有加载节点）
+  if (cons.usable === false || rec.usable === false) {
+    body.innerHTML += `<div class="mdl-warn">⚠ 本机没有能加载该模型的节点：${
+      escapeHtml(cons.note || "详情见大脑的说明")}。<b>下载解决不了问题</b>，建议先让大脑改用替代链路。</div>`;
+  }
   const ok = $("#mdl_ok"), no = $("#mdl_no");
   const cancel = $("#mdl_cancel"), close = $("#mdl_close");
   const prog = $("#mdl_progress");

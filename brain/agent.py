@@ -94,6 +94,73 @@ class Brain:
 
         final_reply = ""
         run_count = 0        # 确定性护栏：执行类工具调用次数
+        # 任务契约 + 尝试台账：把"用户要什么 / 已经试过什么"变成机器可检查的状态
+        from .task import TaskContract, TaskState
+        contract = TaskContract.parse(user_message, uses_upload=bool(image))
+        self.ctx.task = TaskState(contract)
+        if contract.constraints:
+            ev("stage", {"stage": "thinking", "detail": {
+                "contract": contract.constraints}})
+        interrupted = ""
+        try:
+            final_reply = self._tool_loop(run_count)
+        except Exception as e:
+            # 回合不变量：任何异常都必须变成"给用户的一句解释 + 一条任务报告"。
+            # 项目 5 里 provider SSL EOF 让 handle() 直接抛出，那一轮既没有交付
+            # 也没有任何可复盘的痕迹——这是"某轮没有回复"的真正机制。
+            import traceback
+            from .policy import classify, describe
+            kind = classify(str(e))
+            interrupted = (f"⚠ 本轮没能完成：{describe(kind, str(e))}")
+            self._log(f"[中断] {type(e).__name__}: {e}")
+            ev("error", {"message": f"{type(e).__name__}: {str(e)[:300]}",
+                         "kind": kind,
+                         "traceback": traceback.format_exc()[-800:]})
+            if kind == "transient":
+                interrupted += "（服务商瞬时故障，直接回复「继续」即可重试）"
+        else:
+            final_reply = self._tool_loop(run_count)
+
+        # 任务闭环：本轮真的生成了产物才沉淀技能（失败经验也记录）
+        self._auto_remember(user_message)
+        text = final_reply or self._fallback_summary()
+        if interrupted:
+            text = (text.rstrip() + "\n\n" + interrupted).strip()
+        task = self.ctx.task
+        if task is not None and task.phase == "awaiting_user":
+            # 有弹窗在等用户决定时也必须交付本轮回复（项目 5 里
+            # "要修手"那一回合没有留下任何回复，且日志无法解释——
+            # 这里把"必有回复"变成不变量，而不是靠运气）
+            text += ("\n\n（我已在弹窗里请求下载缺失模型，等你在弹窗里决定；"
+                     "确认后我会继续，拒绝就按缺模型的降级方案走。）")
+        if task is not None:
+            task.set_phase("delivered")
+        out = {"text": text,
+               "outputs": self.ctx.draft_meta.get("last_outputs", [])}
+        if task is not None:
+            out["task"] = {"renders": task.renders, "wasted": task.wasted,
+                           "constraints": task.contract.constraints}
+        ev("delivery", out)
+        # 回合收尾留痕：任务报告 + turn_end（缺一环就能从日志直接看出来）
+        try:
+            report_path = self._write_task_report(task)
+            ev("turn_end", {"phase": (task.phase if task else "n/a"),
+                            "reply_len": len(text),
+                            "renders": (task.renders if task else 0),
+                            "wasted": (task.wasted if task else 0),
+                            "report": report_path})
+        except Exception:
+            pass
+        return text
+
+    def _tool_loop(self, run_count: int) -> str:
+        """工具循环：流式思考 → 解析调用 → 执行 → 观察，直到模型不再调工具。
+
+        独立成方法是为了让 handle() 能用 try/except 包住它：任何异常都必须
+        变成"给用户的一句解释 + 一条任务报告"（回合不变量）。
+        """
+        from .events import emit as ev
+        final_reply = ""
         for turn in range(MAX_TURNS):
             reply = self._chat_streamed()
             self.history.append({"role": "assistant", "content": reply})
@@ -127,6 +194,32 @@ class Brain:
                             "禁止原样重试：必须改变策略（换节点/换参数/换工具/"
                             "search_nodes 找新方案）或 ask_user 询问用户。"
                             "（固定种子已自动改为随机，便于比较差异）"})
+                # 护栏（结构性）：同模板 + 同基底图的"重掷"预算。
+                # 只改 denoise/seed 即换签名，旧护栏拦不住；实测项目 5 因此
+                # 连着重绘 3 次（6→4→6→6）纯烧 GPU。这里直接在引擎层拦住。
+                if name == "run_template" and isinstance(args, dict) \
+                        and self.ctx.task is not None:
+                    from .task import strategy_signature
+                    sig2 = strategy_signature(args.get("template_id"),
+                                             args.get("params") or {})
+                    verdict = self.ctx.task.ledger.check(sig2)
+                    if not verdict["allow"]:
+                        self.ctx.task.wasted += 1
+                        self.ctx.task.notes.append(verdict["reason"])
+                        alts = "；".join(verdict.get("alternatives") or [])
+                        self.history.append({"role": "user", "content":
+                            f"[system] 已拦截一次无效重绘：{verdict['reason']}。"
+                            f"可选做法：{alts}。"
+                            + ("本机若缺检测器/遮罩来源，请如实告知用户并"
+                               "ask_user 索取遮罩或改用整图之外的替代方案。"
+                               if verdict["action"] == "blocked" else "")})
+                        ev("tool_end", {"tool": name, "ok": False,
+                                        "blocked": True,
+                                        "summary": verdict["reason"][:200]})
+                        continue
+                    if verdict["action"] == "must_change":
+                        self.history.append({"role": "user", "content":
+                            f"[system] 提示：{verdict['reason']}"})
                 # 护栏：超过 4 次执行（首次+3次修复）强制交付，避免无限烧GPU
                 if run_count > 4:
                     self.history.append({"role": "user", "content":
@@ -140,6 +233,22 @@ class Brain:
                 draft_before = json.dumps(self.ctx.draft, default=str) \
                     if self.ctx.draft else None
                 result = execute_tool(self.ctx, name, args)
+                # 台账：记录这次尝试（分数取自引擎评估，供"不提升就停"）
+                if isinstance(result, dict) and self.ctx.task is not None:
+                    if name in ("run_template", "run_workflow", "submit"):
+                        ev_res = result.get("evaluation") or {}
+                        score = (ev_res.get("vlm") or [{}])[0].get("score") \
+                            if ev_res.get("vlm") else None
+                        from .task import strategy_signature
+                        self.ctx.task.ledger.record(
+                            strategy_signature(args.get("template_id", name),
+                                               args.get("params") or {}),
+                            args.get("params") or {}, result, score=score,
+                            reason=str(result.get("error") or "")[:120])
+                        self.ctx.task.renders += 1
+                # 待用户决策（如下载确认）：记状态，且本轮必须给出回复
+                if isinstance(result, dict) and result.get("awaiting_confirm"):
+                    self.ctx.task and self.ctx.task.set_phase("awaiting_user")
                 # 警告（如幻觉参数被忽略）前置，确保截断窗口内可见
                 head = ""
                 if isinstance(result, dict) and result.get("warnings"):
@@ -159,12 +268,54 @@ class Brain:
                             "graph": self.ctx.draft,
                             "meta": self.ctx.draft_meta})
             self._compact_history()
+        return ""
 
-        # 任务闭环：本轮真的生成了产物才沉淀技能（失败经验也记录）
-        self._auto_remember(user_message)
-        ev("delivery", {"text": final_reply or "（达到最大轮数，请继续提出要求）",
-                        "outputs": self.ctx.draft_meta.get("last_outputs", [])})
-        return final_reply or "（达到最大轮数，请继续提出要求）"
+    def _fallback_summary(self) -> str:
+        """轮数用尽时的兜底汇报：说清产物与评估结论，而不是"请继续提要求"。
+
+        实测这样一轮里其实已经产出了合格图（评估 8/10），却只回了一句
+        "（达到最大轮数，请继续提出要求）"——用户拿不到任何有用信息。
+        """
+        parts = ["（轮数用尽，先汇报当前结果）"]
+        outs = [str(p) for p in (self.ctx.draft_meta.get("last_outputs") or [])]
+        if outs:
+            names = [o.replace("\\", "/").rsplit("/", 1)[-1] for o in outs[-3:]]
+            parts.append("产物：" + "、".join(names))
+            parts.append("位置：" + outs[-1])
+        res = self.ctx.draft_meta.get("last_eval") or {}
+        if res:
+            verdict = res.get("verdict")
+            score = res.get("score")
+            state = ("通过" if verdict is True
+                     else "未通过" if verdict is False else "未知")
+            parts.append(f"评估：{state}" + (f"（{score}/10）" if score is not None
+                                            else ""))
+        task = self.ctx.task
+        if task is not None and task.contract.constraints:
+            parts.append("对照你的要求：" + "；".join(task.contract.constraints))
+        if task is not None and task.wasted:
+            parts.append(f"（本轮拦截了 {task.wasted} 次无效重绘）")
+        if not outs:
+            parts.append("本轮没有产出可用图片，请补充要求或让我换个做法")
+        return "\n".join(parts)
+
+    def _write_task_report(self, task) -> str:
+        """把本轮任务状态落盘（可观测性：以后不必人工翻 9000 行日志）。"""
+        if task is None:
+            return ""
+        proj = getattr(self.ctx, "project", None)
+        if proj is None:
+            return ""
+        try:
+            import time as _t
+            d = proj.dir / "task_reports"
+            d.mkdir(parents=True, exist_ok=True)
+            p = d / f"task_{_t.strftime('%Y%m%d_%H%M%S')}.json"
+            p.write_text(json.dumps(task.to_dict(), ensure_ascii=False,
+                                    indent=1, default=str), encoding="utf-8")
+            return str(p)
+        except Exception:
+            return ""
 
     # ---------- 内部 ----------
     def _chat_streamed(self) -> str:
@@ -173,22 +324,32 @@ class Brain:
         主循环关闭思考模式（thinking=False）：glm 思考模型的工具调用意图
         会随机分流到 reasoning/content 两通道，而本循环只解析 content——
         开启思考会导致调用丢失与预算被 reasoning 挤占（实测两种故障模式）。
-        行动决策不需要推理链，结构化任务关思考已验证质量良好。"""
+        行动决策不需要推理链，结构化任务关思考已验证质量良好。
+
+        瞬时报错自动退避重试一次：provider 常态抽风（实测 502/503/504/SSL EOF），
+        一次抖动就中断整轮会让用户收不到任何回复（项目 5 实证）。
+        """
         from .events import emit as ev
-        parts = []
-        try:
-            for channel, delta in self.llm.chat_stream(
-                    self.history, temperature=0.4, thinking=False):
-                if channel == "content":
-                    parts.append(delta)
-                ev("think_delta", {"channel": channel, "delta": delta})
-        except LLMError:
-            # 流式整体失败 → 回退非流式（同样关闭思考）
-            reply = self.llm.chat(self.history, temperature=0.4,
-                                  thinking=False)
-            ev("think_delta", {"channel": "content", "delta": reply})
-            return reply
-        return "".join(parts)
+        from .policy import TRANSIENT, classify
+        last = None
+        for attempt in (1, 2):
+            parts = []
+            try:
+                for channel, delta in self.llm.chat_stream(
+                        self.history, temperature=0.4, thinking=False):
+                    if channel == "content":
+                        parts.append(delta)
+                    ev("think_delta", {"channel": channel, "delta": delta})
+                return "".join(parts)
+            except LLMError as e:
+                last = e
+                if attempt == 1 and classify(str(e)) == TRANSIENT:
+                    if self.verbose:
+                        self._log(f"  LLM 瞬时故障，退避重试一次：{str(e)[:80]}")
+                    time.sleep(2.0)
+                    continue
+                raise
+        raise last
 
     # ---------- 内部 ----------
     def _auto_remember(self, task: str):

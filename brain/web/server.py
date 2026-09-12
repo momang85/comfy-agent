@@ -239,7 +239,26 @@ def _download_finished(rec: dict) -> None:
     retry = rec.get("retry") or {}
     tid = retry.get("template")
     key = f"{pid}|{tid}|{name}"
+    # 世界变了：下载完成必须重扫，否则重跑仍用旧清单判"缺"（项目 5 实证）
     if state == "done":
+        try:
+            bs.brain.ctx.refresh_world(f"下载完成 {name}")
+        except Exception:
+            pass
+    if state == "done":
+        if not retry.get("from_missing_model"):
+            # 没有"因缺模型失败"的真实记录时，绝不编造前提（项目 5 实证）：
+            # 只中性告知模型已就绪，让大脑自己判断要不要用它、怎么用
+            text = (f"[system] 模型 {name} 已就绪"
+                    f"（{rec.get('size_text')}）→ {rec.get('dest')}。"
+                    "它属于哪个链路、由哪个节点加载见下载结果里的 consumer 字段。"
+                    "本轮并没有因缺模型失败的任务在等它——如需继续请按用户诉求判断，"
+                    "不要为了用这个模型而额外渲染。")
+            try:
+                bs.inbox.put({"text": text})
+            except Exception:
+                pass
+            return
         if _AUTO_RETRY.get(key, 0) >= _AUTO_RETRY_LIMIT:
             text = (f"[system] 模型 {name} 已下载完成，但该任务已自动重跑过一次，"
                     "不再重复执行。请告知用户模型已就绪、可按需再次发起。")
@@ -422,6 +441,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(get_settings())
         if path == "/api/model-downloads":
             return self._get_model_downloads(q.get("project", [None])[0])
+        if path == "/api/world":
+            return self._get_world(q.get("project", [None])[0])
         if path.startswith("/api/outputs/"):
             return self._serve_output(path[len("/api/outputs/"):])
         self.send_error(404)
@@ -438,11 +459,50 @@ class Handler(BaseHTTPRequestHandler):
             return self._post_settings()
         if parsed.path == "/api/model-download":
             return self._post_model_download()
+        if parsed.path == "/api/refresh":
+            return self._post_refresh()
         if parsed.path == "/api/interrupt":
             s = SESSION.session_for(None)
             s.brain.ctx.client.interrupt()
             return self._json({"ok": True})
         self.send_error(404)
+
+    def _get_world(self, project_id):
+        """世界模型状态：节点数、模型目录、清单 fresh 与否（前端"重扫"用）。"""
+        if SESSION is None:
+            return self.send_error(503, "服务初始化中")
+        bs = SESSION.session_for(project_id)
+        k = bs.brain.ctx.knowledge
+        return self._json({"ok": True,
+                           "revision": bs.brain.ctx.world.revision,
+                           "stale": bs.brain.ctx.world.stale,
+                           "nodes": len(k.snapshot or {}),
+                           "model_folders": {f: len(v)
+                                             for f, v in (k.models or {}).items()},
+                           "paths": bs.brain.ctx.world.paths()})
+
+    def _post_refresh(self):
+        """重扫本机节点与模型（下载完模型/装了节点后必须重扫）。"""
+        if SESSION is None:
+            return self.send_error(503, "服务初始化中")
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b"{}"
+        try:
+            project_id = (json.loads(_decode_body(body)) or {}).get("project_id")
+        except json.JSONDecodeError:
+            project_id = None
+        bs = SESSION.session_for(project_id)
+        try:
+            changed = bs.brain.ctx.refresh_world("前端重扫")
+        except Exception as e:
+            return self._json({"ok": False,
+                               "error": f"{type(e).__name__}: {e}"}, code=502)
+        k = bs.brain.ctx.knowledge
+        return self._json({"ok": True, "changed": changed,
+                           "revision": bs.brain.ctx.world.revision,
+                           "nodes": len(k.snapshot or {}),
+                           "model_folders": {f: len(v)
+                                             for f, v in (k.models or {}).items()}})
 
     def _get_model_downloads(self, project_id):
         """下载任务列表（前端刷新/换项目后恢复弹窗状态）。"""

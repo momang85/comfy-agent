@@ -1,7 +1,7 @@
 # 缺陷台账审计（逐条对照代码 · 2026-09-11）
 
 方法：不采信文档自述，逐项在**当前代码**里核对修复是否真的存在。证据列为 file:line。
-单测：`python -B -m unittest discover -s tests` → **148 tests OK**（2026-09-12 追加缺模型下载后为 **181 tests OK**，追加视觉通道/上传绑定后为 **201 tests OK**）。
+单测：`python -B -m unittest discover -s tests` → **148 tests OK**（2026-09-12 追加缺模型下载后为 **181 tests OK**，追加视觉通道/上传绑定后为 **201 tests OK**，架构反思与机制化后为 **238 tests OK**）。
 
 ## 一、状态总表
 
@@ -71,3 +71,17 @@
 | D11 | 看图失败后大脑编造画面内容（"根据历史记录这张图与之前相同"） | 提示词只有"先分析"的前置要求，缺失败分支的诚实性规则 | 新增规则 14 + 上传注记强约束 + 任务映射补充 | ✅ FIXED |
 | D12 | 视觉失败时评估静默跳过，还显示"评估通过" | `except` 吞掉 → `pass=None`，`EvalResult.ok` 不计失败 | `EvalResult.vlm_error` + 去重告警 + 评估卡显示"语义评估已跳过" | ✅ FIXED |
 | D13 | 自查回归：`current_upload` 透传给 `run_workflow` → TypeError | 新参数未在 `run_template` 入口取出 | `kw.pop("current_upload")`（真机第一轮即暴露） | ✅ FIXED |
+
+## 六、2026-09-13 追加：项目 5 暴露的结构性成因（详见 `docs/architecture-reflection-2026-09-13.md`）
+
+| ID | 结构性问题 | 机制化修复 | 状态 |
+|---|---|---|---|
+| D14 | 世界镜像过期无人对账：快照无 TTL、会话共用、判"存在"只查缓存 | `comfy_agent/world.py`（`ensure_fresh`/`model_exists` 严格同名/`file_on_disk` 落盘兜底）+ `refresh_world` 工具 + `/api/refresh` + 前端重扫按钮；下载完成强制刷新 | ✅ FIXED |
+| D15 | 模糊匹配当"存在"：`new.safetensors` 命中 `old.safetensors`（0.48） | `Knowledge.model_exists` 严格判定；`find_model` 门槛 0.35→0.6 且只用于建议 | ✅ FIXED |
+| D16 | 服务器拒绝枚举时用陈旧快照 `choices[0]` 顶替（静默换模型） | `_apply_server_fixes` 改取**服务器实时选项**，拿不到就不替换并交回大脑 | ✅ FIXED |
+| D17 | 用户要求不进判据：特写拿 9/10 | `brain/task.py::TaskContract` → 评估 criteria + 交付对照；实测新判据给出 `verdict=false score=3` | ✅ FIXED |
+| D18 | 只改 denoise 即绕过重复护栏，同一基底重绘 3 次 | `AttemptLedger`（签名含模板+基底+手法，不含 denoise）+ 引擎层拦截；实测第 2 次同手法 `blocked=true` | ✅ FIXED |
+| D19 | 失败不分类，缺节点被当成缺模型白下 21.46MB | `brain/policy.py` 分类表 + `download_model` 返回 `consumer/usable`；缺加载节点时明说"下载无用" | ✅ FIXED |
+| D20 | 重跑消息前提编造（"刚才因缺模型失败"） | `missing_retry` 只在 runner 真因 `missing_models` 早退时写入；无记录时只中性告知已就绪 | ✅ FIXED |
+| D21 | 异常让整轮没有回复且无痕迹（真机复现 SSL EOF） | `handle()` 包住工具循环：任何异常都产出"解释 + task report + turn_end"；LLM 瞬时故障退避重试 1 次；审计写失败改为可见 | ✅ FIXED |
+| D22 | `validate` 带阻断错误却 `ok:true`；尺寸参数被静默忽略 | `tool_validate` 有 blocker 即 `ok:false`；尺寸类未知参数**拦在执行前**并给替代参数名 | ✅ FIXED |

@@ -621,7 +621,7 @@ class DownloadManager:
     def request(self, url: str, filename: str, folder: str, *,
                 source: str = "", size=0, project_id: str | None = None,
                 retry: dict | None = None, note: str = "",
-                name: str = "") -> dict:
+                name: str = "", consumer: dict | None = None) -> dict:
         clean = assert_public_url(url)                  # 先校验，失败不弹窗
         dest = target_path(folder, filename)            # 路径校验同理
         # 弹窗前探测一次真实大小：大脑经常自己"估"大小甚至自己拼 URL
@@ -658,7 +658,8 @@ class DownloadManager:
                    "folder": folder, "source": source,
                    "size": size, "size_text": human_size(size),
                    "declared_size": declared, "size_source": size_source,
-                   "warnings": warnings,
+                   "warnings": warnings, "consumer": consumer or {},
+                   "usable": bool((consumer or {}).get("usable", True)),
                    "received": 0, "percent": 0.0, "speed": 0.0,
                    "dest": str(dest), "target_dir": str(dest.parent),
                    "project": project_id, "retry": retry or {}, "note": note,

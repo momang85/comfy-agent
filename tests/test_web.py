@@ -202,9 +202,21 @@ class TestDownloadAutoRerun(unittest.TestCase):
         base = {"state": "done", "filename": "m.safetensors",
                 "size_text": "4.71 MB", "dest": r"C:\models\vae_approx\m.safetensors",
                 "project": "project", "error": "",
-                "retry": {"template": "t2i", "params": {"prompt": "猫"}}}
+                # from_missing_model=True 表示"确实有一次因缺模型失败的任务"
+                # （只有这种情况才允许自动重跑；见 test_project5_replay）
+                "retry": {"template": "t2i", "params": {"prompt": "猫"},
+                          "from_missing_model": True}}
         base.update(kw)
         return base
+
+    def test_no_premise_no_rerun(self):
+        """没有"因缺模型失败"的真实记录时，只中性告知已就绪、不催重跑。"""
+        rec = self._rec()
+        rec["retry"] = {"template": "t2i", "params": {"prompt": "猫"}}
+        self.server._download_finished(rec)
+        text = self.sess.bs.inbox.get_nowait()["text"]
+        self.assertIn("已就绪", text)
+        self.assertNotIn("请立即重新执行", text)
 
     def test_success_enqueues_rerun_with_template(self):
         self.server._download_finished(self._rec())

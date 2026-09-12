@@ -28,8 +28,12 @@ class ToolContext:
 
     def __init__(self, ask_user_fn: Callable[[str], str] | None = None,
                  project=None):
+        from comfy_agent.world import WorldModel
         self.client = Client()
-        self.knowledge = Knowledge.build()
+        # 世界模型：本机节点/模型/加载能力的唯一入口，带新鲜度与落盘兜底。
+        # knowledge 保持可用（大量既有工具在读它），但刷新走 world.refresh()
+        self.world = WorldModel(client=self.client)
+        self.task = None            # 本轮任务契约与台账（brain.task.TaskState）
         self.ask_user_fn = ask_user_fn
         # 项目隔离：产物输出到项目目录
         self.project = project
@@ -47,6 +51,14 @@ class ToolContext:
         self.current_upload: dict | None = None
         # 合成会话（图合成引擎）
         self.synth = None
+
+    @property
+    def knowledge(self):
+        """节点/模型知识（委托给世界模型，刷新后自动跟着换）。"""
+        return self.world.knowledge
+
+    def refresh_world(self, reason: str = "手动") -> bool:
+        return self.world.refresh(reason=reason)
 
     # ---- 会话持久化 ----
     def save_session(self, path: Path):
@@ -114,11 +126,41 @@ def tool_upload_image(ctx: ToolContext, args: dict) -> dict:
 
 
 def tool_validate(ctx: ToolContext, args: dict) -> dict:
-    """本地校验当前草稿（不提交）。"""
+    """本地校验当前草稿（不提交）。
+
+    ok 的语义：**有阻断项就 False**。以前无论有多少 bad_enum 都返回 ok:true，
+    大脑据此把"占位符文件名"读成"接线正确"（项目 5 实证）。
+    占位符（example.png / mask.png 之类）算提示，不算阻断——它们是模板骨架。
+    """
     if not ctx.draft:
         return {"ok": False, "error": "没有工作流草稿（先 render_workflow）"}
     issues = validate_workflow(ctx.draft, ctx.knowledge)
-    return {"ok": True, "issues": [i.to_dict() for i in issues]}
+    dicts = [i.to_dict() for i in issues]
+    blocking = [i for i in dicts
+                if i.get("kind") in BLOCKING_ISSUES
+                and not _is_placeholder_issue(i)]
+    out = {"ok": not blocking, "issues": dicts,
+           "blocking": [{"node": i.get("node"), "input": i.get("input"),
+                         "kind": i.get("kind"), "message": i.get("message")}
+                        for i in blocking]}
+    if blocking:
+        out["error"] = (f"{len(blocking)} 项阻断问题（不可提交）："
+                        + "；".join(str(i.get("message"))[:80] for i in blocking[:3]))
+        out["hint"] = ("必须先把这些改掉再提交（占位符文件名如 example.png/"
+                       "mask.png 不算阻断，但真实提交前要换成实际文件）")
+    return out
+
+
+#: 会让提交必然失败的校验类别（missing_node = 本机没有该节点类）
+BLOCKING_ISSUES = ("unknown_node", "missing_node", "missing_required",
+                   "bad_enum", "type_mismatch", "dangling_link", "bad_slot")
+#: 模板骨架里的占位文件（不算阻断）
+_PLACEHOLDER_FILES = ("example.png", "mask.png", "image.png", "input.png")
+
+
+def _is_placeholder_issue(issue: dict) -> bool:
+    msg = str(issue.get("message") or "")
+    return any(p in msg for p in _PLACEHOLDER_FILES)
 
 
 def tool_submit(ctx: ToolContext, args: dict) -> dict:
@@ -367,7 +409,7 @@ def _resolve_upload(ctx: ToolContext, raw: str) -> Path | None:
     if not raw:
         return None
     p = Path(raw)
-    if p.exists():
+    if p.is_file():          # 目录也算"存在"，但拿去读会 PermissionError（实测）
         return p
     name = p.name
     for f in _upload_candidates(ctx):
@@ -388,7 +430,7 @@ def tool_analyze_image(ctx: ToolContext, args: dict) -> dict:
     else:
         p = _resolve_upload(ctx, raw)
         source = "指定路径"
-    if p is None or not Path(p).exists():
+    if p is None or not Path(p).is_file():
         cands = [f.name for f in _upload_candidates(ctx)][:8]
         hint = (f"本项目已上传：{cands}" if cands
                 else "本项目还没有上传记录")
@@ -419,6 +461,14 @@ def tool_analyze_image(ctx: ToolContext, args: dict) -> dict:
                          "禁止改用项目里的其它图片")}
 
 
+def _task_criteria(ctx: ToolContext) -> str:
+    """本轮任务的验收判据（契约里有用户要求就用它，否则空→引擎用兜底）。"""
+    task = getattr(ctx, "task", None)
+    if task is None:
+        return ""
+    return task.contract.criteria()
+
+
 def tool_run_template(ctx: ToolContext, args: dict) -> dict:
     """模板快捷执行（渲染+五段管线），结果与 run_workflow 同构。
     执行后草稿与产物关联，供 edit_workflow 增量修改。"""
@@ -436,9 +486,17 @@ def tool_run_template(ctx: ToolContext, args: dict) -> dict:
                           knowledge=ctx.knowledge,
                           output_root=ctx.project.outputs_dir()
                           if ctx.project else None,
-                          current_upload=ctx.current_upload)
+                          current_upload=ctx.current_upload,
+                          criteria=_task_criteria(ctx))
     if result.get("ok"):
         ctx.prompt_id = result.get("prompt_id")
+        # 缺模型失败被记下来：下载完成后只按**这条真实记录**重跑
+        if result.get("missing_models"):
+            ctx.draft_meta["missing_retry"] = {
+                "template": tid, "params": params,
+                "models": result.get("missing_models")}
+        else:
+            ctx.draft_meta.pop("missing_retry", None)
         ctx.draft_meta["last_outputs"] = [
             o.get("local_path") for o in result.get("outputs", [])
             if o.get("local_path")]
@@ -835,13 +893,21 @@ def _free_vram_gb(ctx: ToolContext) -> float | None:
 
 
 def _retry_context(ctx: ToolContext, args: dict) -> dict:
-    """下载成功后要自动重跑的任务描述（优先工具入参，否则用当前草稿）。"""
-    tid = args.get("retry_template") or ctx.draft_meta.get("template_id")
-    if not tid:
-        return {}
-    return {"template": tid,
-            "params": args.get("retry_params")
-            or ctx.draft_meta.get("params") or {}}
+    """下载成功后要自动重跑的任务描述。
+
+    只认**真发生过**的缺模型失败（`ctx.draft_meta["missing_retry"]`，由
+    run_template 在真的因 missing_models 早退时写入）。绝不拿"最后一次渲染"
+    冒充——项目 5 里就编出过"刚才因缺模型失败的任务"，而那次渲染其实成功了，
+    且与刚下的检测器模型毫无关系。
+    """
+    if args.get("retry_template"):
+        return {"template": args["retry_template"],
+                "params": args.get("retry_params") or {},
+                "from_missing_model": True}
+    rec = (ctx.draft_meta or {}).get("missing_retry")
+    if isinstance(rec, dict) and rec.get("template"):
+        return {**rec, "from_missing_model": True}
+    return {}
 
 
 def tool_search_models(ctx: ToolContext, args: dict) -> dict:
@@ -868,19 +934,34 @@ def tool_search_models(ctx: ToolContext, args: dict) -> dict:
     brief = [{"filename": c["filename"], "folder": c["folder"],
               "source": c["source"], "size_text": c["size_text"],
               "fits": c["fit"]["fits"], "target_dir": c["target_dir"],
-              "url": c["url"], "name": c["name"]} for c in cands]
+              "url": c["url"], "name": c["name"],
+              "consumer": _consumer_info(ctx, c["filename"], c["folder"])}
+             for c in cands]
     # 记住候选：download_model 会据此校正大脑自拟/猜错的 url 与大小
     # （实测大脑会把 4.71MB 的候选写成 1.2GB + 自己拼一个不存在的 HF 地址）
     cache = ctx.draft_meta.setdefault("_model_candidates", {})
-    for c in cands:
+    for c, b in zip(cands, brief):
+        c["consumer"] = b["consumer"]
         cache.setdefault(c["filename"].lower(), []).append(c)
+    unusable = [b for b in brief if not (b["consumer"] or {}).get("usable", True)]
     return {"ok": True, "query": filename, "count": len(brief),
             "candidates": brief, "vram_free_gb": _free_vram_gb(ctx),
             "hint": ("取第一条候选（已按匹配度排序）调用 download_model，"
                      "url/filename/folder/size 一律原样照抄候选字段："
                      "url 不要自己拼（拼出来的地址实测 404），"
                      "size 用候选的 size_text，不要自己估算。"
-                     "弹窗会显示名称/大小/来源/是否适配/目标目录，由用户决定是否下载。")}
+                     + (f"⚠ 注意：{len(unusable)} 个候选本机没有能加载它的节点，"
+                        "下载之前先跟用户说清是节点/依赖问题——下模型解决不了。"
+                        if unusable else "")
+                     + "弹窗会显示名称/大小/来源/是否适配/目标目录，由用户决定是否下载。")}
+
+
+def _consumer_info(ctx: ToolContext, filename: str, folder: str) -> dict:
+    """"下这个模型有用吗"：本机有没有能加载它的节点（世界模型回答）。"""
+    try:
+        return ctx.world.model_usability(filename, folder or "")
+    except Exception:
+        return {"usable": True, "loader": None, "note": ""}
 
 
 def _pick_cached_candidate(ctx: ToolContext, args: dict) -> dict | None:
@@ -908,6 +989,8 @@ def tool_download_model(ctx: ToolContext, args: dict) -> dict:
     url = str(args["url"])
     size = md.parse_size(args.get("size") or args.get("size_bytes"))
     source = str(args.get("source") or "")
+    consumer = _consumer_info(ctx, str(args["filename"]),
+                              str(args["folder"] or ""))
     substituted = False
     cand = _pick_cached_candidate(ctx, args)
     if cand is not None:
@@ -925,7 +1008,8 @@ def tool_download_model(ctx: ToolContext, args: dict) -> dict:
             source=source, size=size, project_id=ctx.project_id,
             retry=_retry_context(ctx, args),
             note=str(args.get("note") or ""),
-            name=str(args.get("name") or (cand or {}).get("name") or ""))
+            name=str(args.get("name") or (cand or {}).get("name") or ""),
+            consumer=consumer)
     except md.DownloadError as e:
         return {"ok": False, "error": str(e),
                 "hint": ("该候选不可用（地址或落盘路径未通过安全校验/超出上限）。"
@@ -934,16 +1018,42 @@ def tool_download_model(ctx: ToolContext, args: dict) -> dict:
            "filename": rec["filename"], "size_text": rec["size_text"],
            "source": rec["source"], "dest": rec["dest"],
            "fits": rec["fit"]["fits"],
+           "consumer": consumer,
+           "usable": bool(consumer.get("usable", True)),
            "fit_notes": list(rec["fit"]["notes"]) + list(rec.get("warnings") or []),
            "awaiting_confirm": True,
            "note": ("下载确认弹窗已弹出，等待用户决定——不要重复调用本工具、"
                     "不要自行判断用户是否同意。用户确认后系统会自动重跑刚才"
                     "失败的任务；用户拒绝或下载失败时，按缺模型降级继续。")}
+    if not out["usable"]:
+        out["note"] = ("⚠ 本机没有能加载该模型的节点："
+                       f"{consumer.get('note') or ''}"
+                       "。**下载解决不了问题**——请如实告诉用户这是节点/依赖问题"
+                       "（可用 inspect_node 核对后再给安装建议），"
+                       "并给出不需要该模型的替代链路。 " + out["note"])
     if substituted:
         out["url_corrected"] = True
         out["note"] = ("你给的下载地址与 search_models 的权威候选不一致，"
                        "已改用候选地址。 " + out["note"])
     return out
+
+
+def tool_refresh_world(ctx: ToolContext, args: dict) -> dict:
+    """重扫本机世界（节点签名 + 模型清单）。
+
+    下载完模型、装完节点、改了 ComfyUI 目录后必须重扫，否则一直用旧镜像
+    判断"有没有"，表现为"刚下完还说缺"（项目 5 实证）。
+    args: {reason?: str}"""
+    reason = str(args.get("reason") or "大脑请求重扫")
+    try:
+        changed = ctx.refresh_world(reason)
+    except Exception as e:
+        return {"ok": False, "error": f"重扫失败：{type(e).__name__}: {e}"}
+    k = ctx.knowledge
+    models = {f: len(v) for f, v in (k.models or {}).items()}
+    return {"ok": True, "changed": changed, "revision": ctx.world.revision,
+            "nodes": len(k.snapshot or {}), "model_folders": models,
+            "note": ("清单已更新" if changed else "清单与之前一致（可能确实没变化）")}
 
 
 # ---------------- 注册表 ----------------
@@ -1039,6 +1149,10 @@ TOOLS: dict[str, dict] = {
                                 "folder": "str", "size?": "str",
                                 "source?": "str", "retry_template?": "str",
                                 "retry_params?": "dict"}},
+    "refresh_world": {"fn": tool_refresh_world,
+                      "desc": "重扫本机节点与模型清单（刚下载模型/装了节点/"
+                              "改了 ComfyUI 目录后调用，否则会一直判\"缺\"）",
+                      "args": {"reason?": "str"}},
 }
 
 

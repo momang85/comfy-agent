@@ -11,6 +11,9 @@ from __future__ import annotations
 import json
 import re
 from difflib import SequenceMatcher
+import json
+import os
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -18,37 +21,159 @@ from . import config
 from .client import Client, ComfyUIError
 
 SNAPSHOT_PATH = config.KNOWLEDGE_DIR / "object_info_snapshot.json"
+# 快照的抓取时间单独存：写进快照字典会污染节点命名空间（"有没有 _meta 这个节点"）
+SNAPSHOT_META_PATH = config.KNOWLEDGE_DIR / "object_info_snapshot.meta.json"
 # Manager 缓存：节点类名 -> 所属自定义节点包
 EXT_MAP_CANDIDATES = ("extension-node-map.json", "1514988643_custom-node-list.json")
 
 
 class Knowledge:
     def __init__(self, snapshot: dict, ext_map: dict | None = None,
-                 models: dict | None = None):
+                 models: dict | None = None, client: Client | None = None,
+                 loaded_at: float = 0.0):
         self.snapshot = snapshot            # {node_class: object_info_entry}
         self.ext_map = ext_map or {}        # {node_class: [包名...]}
         self.models = models or {}          # {folder: [文件名]}
+        self._client = client or Client()   # 用于 ensure_fresh / live_choices
+        self.loaded_at = loaded_at or time.time()
+        self.revision = 0                   # 每次刷新自增（可观测）
 
     # ---------- 构建 ----------
     @classmethod
     def build(cls, client: Client | None = None, refresh: bool = False) -> "Knowledge":
         client = client or Client()
-        snapshot = None
-        if not refresh and SNAPSHOT_PATH.exists():
-            try:
-                snapshot = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
-            except Exception:
-                snapshot = None
+        snapshot, stale = cls._load_snapshot(refresh)
         if snapshot is None:
             snapshot = client.object_info()
-            SNAPSHOT_PATH.write_text(
-                json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+            cls._save_snapshot(snapshot)
         ext_map = cls._load_manager_extmap()
         try:
             models = client.models()
         except ComfyUIError:
             models = {}
-        return cls(snapshot, ext_map, models)
+        k = cls(snapshot, ext_map, models, client=client,
+                loaded_at=time.time())
+        k._models_mtime = k._current_models_mtime()
+        return k
+
+    # ---------- 新鲜度（世界会变：下载了模型、装了节点、改了设置） ----------
+    @classmethod
+    def _load_snapshot(cls, refresh: bool) -> tuple[dict | None, bool]:
+        """读快照。返回 (snapshot, stale)；stale=True 表示该重取但先用了旧值。
+
+        旧实现只看"文件存在"：节点签名与模型枚举会永久停留在第一次抓取，
+        于是"刚下完的模型仍判缺、刚装的节点仍不认识"（项目 5 实证）。
+        """
+        if refresh or not SNAPSHOT_PATH.exists():
+            return None, False
+        try:
+            data = json.loads(SNAPSHOT_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return None, False
+        try:
+            meta = json.loads(SNAPSHOT_META_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            meta = {}
+        age = time.time() - float(meta.get("fetched_at") or 0)
+        return data, age > config.WORLD_SNAPSHOT_TTL
+
+    @classmethod
+    def _save_snapshot(cls, snapshot: dict) -> None:
+        try:
+            SNAPSHOT_PATH.write_text(
+                json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+            SNAPSHOT_META_PATH.write_text(
+                json.dumps({"fetched_at": time.time()}), encoding="utf-8")
+        except OSError:
+            pass
+
+    @staticmethod
+    def _current_models_mtime() -> float:
+        """models 根目录 mtime：新增/删除模型文件会改变它（下载落盘即触发）。"""
+        try:
+            return os.path.getmtime(config.MODELS_DIR)
+        except OSError:
+            return 0.0
+
+    def ensure_fresh(self, force: bool = False,
+                     min_interval: float = 5.0) -> bool:
+        """按需刷新：TTL 过期或 models 目录 mtime 变化就重取。
+
+        返回是否真的刷新过。所有"有没有这个模型/节点"的判断都应先经过它，
+        否则就是在用过期镜像做决策（浪费的根源之一）。
+        """
+        now = time.time()
+        if not force and now - getattr(self, "_checked_at", 0) < min_interval:
+            return False
+        self._checked_at = now
+        changed = False
+        if force or (now - getattr(self, "loaded_at", 0)) > config.WORLD_SNAPSHOT_TTL:
+            try:
+                self.snapshot = self._client.object_info()
+                self._save_snapshot(self.snapshot)
+                changed = True
+            except Exception:
+                pass
+        mtime = self._current_models_mtime()
+        if force or mtime != getattr(self, "_models_mtime", None):
+            try:
+                self.models = self._client.models()
+                self._models_mtime = mtime
+                changed = True
+            except Exception:
+                pass
+        if changed:
+            self.revision += 1
+        return changed
+
+    def file_on_disk(self, name: str, folders: list[str] = None):
+        """按分隔符归一在 models/ 里做单文件落盘校验；命中返回 Path。
+
+        实现放在 world.py（避免与它循环导入），这里只是转发。
+        """
+        from .world import file_on_disk
+        return file_on_disk(name, folders)
+
+    def model_available(self, name: str, folders: list[str] = None) -> bool:
+        """严格判断：清单同名（或落盘命中）才算存在，并记进本次会话清单。
+
+        不用 find_model 的模糊结果——`new.safetensors` 命中 `old.safetensors`
+        会让系统以为模型在（然后静默换模型或渲染失败）。
+        """
+        if self.model_exists(name, folders=folders):
+            p = self.file_on_disk(name, folders=folders)
+            if p is not None:
+                folder = folders[0] if folders else p.parent.name
+                self.models.setdefault(folder, [])
+                if p.name not in self.models[folder]:
+                    self.models[folder].append(p.name)
+            return True
+        return False
+
+    def live_choices(self, node_class: str, input_name: str,
+                     client: Client = None) -> list | None:
+        """直接问服务器要该输入的当前选项（服务器拒绝枚举时的权威来源）。
+
+        `/object_info/<class>` 返回 {class: entry}；拿不到就返回 None，
+        调用方必须据此**放弃自动替换**，而不是退回陈旧快照硬猜。
+        """
+        cli = client or self._client
+        try:
+            data = cli.object_info(node_class) or {}
+        except Exception:
+            return None
+        entry = data.get(node_class) if isinstance(data, dict) else None
+        if entry is None and isinstance(data, dict) and len(data) == 1:
+            entry = next(iter(data.values()))
+        for section in ("required", "optional"):
+            spec = (entry or {}).get("input", {}).get(section, {}).get(input_name)
+            if isinstance(spec, list) and spec:
+                if isinstance(spec[0], list):
+                    return spec[0]
+                if isinstance(spec[0], str) and len(spec) >= 2 and \
+                        isinstance(spec[1], dict) and "choices" in spec[1]:
+                    return spec[1]["choices"]
+        return None
 
     @staticmethod
     def _load_manager_extmap() -> dict:
@@ -209,7 +334,12 @@ class Knowledge:
 
     # ---------- 模型 ----------
     def find_model(self, query: str, folders: list[str] = None) -> list[dict]:
-        """在模型清单中模糊查找。返回 [{name, folder, score}]。"""
+        """在模型清单中模糊查找（**供建议用**，不要拿它判断"存在"）。
+
+        返回 [{name, folder, score}]。分数门槛刻意收紧：0.35 时
+        `new.safetensors` 会命中 `old.safetensors`（相似度 0.48），把"完全不同
+        的文件"当成可用模型是静默换模型的根源。判断存在请用 model_exists()。
+        """
         q = (query or "").lower().replace("\\", "/")
         out = []
         for folder, files in self.models.items():
@@ -224,10 +354,29 @@ class Knowledge:
                     score = 0.8
                 else:
                     score = SequenceMatcher(None, q, fname).ratio() * 0.6
-                if score >= 0.35:
+                if score >= 0.6:            # 只留"明确相关"的（同名/包含）
                     out.append({"name": f, "folder": folder, "score": round(score, 3)})
         out.sort(key=lambda x: -x["score"])
         return out[:10]
+
+    def model_exists(self, name: str, folders: list[str] = None) -> bool:
+        """严格判断模型是否存在：归一化后**同名**（或路径一致），或文件在盘上。
+
+        这是"缺不缺"的唯一口径；模糊匹配只用于给建议。
+        """
+        val = str(name or "").strip()
+        if not val:
+            return False
+        want = val.replace("\\", "/").lower()
+        want_base = want.rsplit("/", 1)[-1]
+        for folder, files in (self.models or {}).items():
+            if folders and folder not in folders:
+                continue
+            for f in files:
+                got = str(f).replace("\\", "/").lower()
+                if got == want or got.rsplit("/", 1)[-1] == want_base:
+                    return True
+        return self.file_on_disk(val, folders) is not None
 
     def all_checkpoints(self) -> list[str]:
         return list(self.models.get("checkpoints", []))

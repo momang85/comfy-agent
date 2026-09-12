@@ -18,6 +18,44 @@ from .knowledge import Knowledge
 FILE_SUFFIXES = (".safetensors", ".pt", ".ckpt", ".gguf", ".pth", ".sft",
                  ".png", ".jpg", ".jpeg", ".webp", ".bmp")
 
+# 加载类节点 → 它读哪个模型目录（静态，用于落盘兜底与可加载性判断）
+_LOADER_FOLDERS: dict[str, list[str]] = {
+    "CheckpointLoaderSimple": ["checkpoints"],
+    "CheckpointLoader": ["checkpoints"],
+    "LoraLoader": ["loras"], "LoraLoaderModelOnly": ["loras"],
+    "VAELoader": ["vae"],
+    "UNETLoader": ["diffusion_models", "unet"],
+    "CLIPLoader": ["text_encoders", "clip"],
+    "DualCLIPLoader": ["text_encoders", "clip"],
+    "TripleCLIPLoader": ["text_encoders", "clip"],
+    "CLIPVisionLoader": ["clip_vision"],
+    "ControlNetLoader": ["controlnet"],
+    "DiffControlNetLoader": ["controlnet"],
+    "UpscaleModelLoader": ["upscale_models"],
+    "StyleModelLoader": ["style_models"],
+    "GLIGENLoader": ["gligen"],
+    "PhotoMakerLoader": ["photomaker"],
+    "IPAdapterModelLoader": ["ipadapter"],
+    "ModelPatchLoader": ["model_patches"],
+    "LTXAVTextEncoderLoader": ["text_encoders"],
+    "LTXVAudioVAELoader": ["audio_encoders"],
+    "UltralyticsDetectorProvider": ["ultralytics"],
+    "AILab_YoloV8Adv": ["ultralytics"],
+    "ONNXDetectorProvider": ["onnx"],
+    "SAMLoader": ["sams"],
+    "CLIPLoaderGGUF": ["llm_gguf", "text_encoders"],
+    "UnetLoaderGGUF": ["llm_gguf", "diffusion_models"],
+}
+
+# 输入名里的关键词 → 模型目录（类名没覆盖时的兜底）
+_INPUT_FOLDER_KEYWORDS = (
+    ("ckpt", ["checkpoints"]), ("lora", ["loras"]),
+    ("vae", ["vae", "vae_approx"]), ("unet", ["diffusion_models", "unet"]),
+    ("clip", ["text_encoders", "clip"]), ("control", ["controlnet"]),
+    ("upscale", ["upscale_models"]), ("style", ["style_models"]),
+    ("audio", ["audio_encoders"]), ("sam", ["sams"]),
+)
+
 
 class ValidationIssue:
     def __init__(self, node_id: str, node_class: str, input_name: Optional[str],
@@ -142,6 +180,11 @@ def validate_workflow(api: dict, knowledge: Knowledge) -> list[ValidationIssue]:
                     val_norm = str(val).replace("\\", "/")
                     choices_norm = [c.replace("\\", "/") for c in choices]
                     matched = val_norm in choices_norm
+                    if not matched:
+                        # 枚举是快照，可能过期；文件确实在盘上就不该报错
+                        # （项目 5：下完模型仍被本地校验判缺）
+                        if _on_disk_file_matches(val, _folders_for_input(cls, name)):
+                            matched = True
                 else:
                     matched = str(val) in choices
                 if not matched:
@@ -209,6 +252,29 @@ def _is_autogrow(spec) -> bool:
     """spec 是否为 COMFY_AUTOGROW_V3 动态输入（可增删的输入组）。"""
     return (isinstance(spec, list) and spec and
             spec[0] == "COMFY_AUTOGROW_V3")
+
+
+def _folders_for_input(cls: str, input_name: str) -> list[str]:
+    """文件型输入可能落在哪些模型目录（不看缓存，纯静态映射）。
+
+    用于本地枚举失效时的落盘兜底：缓存是快照、可能过期，磁盘不会。
+    """
+    if cls in _LOADER_FOLDERS:
+        return list(_LOADER_FOLDERS[cls])
+    nl = input_name.lower()
+    for key, folders in _INPUT_FOLDER_KEYWORDS:
+        if key in nl:
+            return list(folders)
+    return []          # model_name 之类：交给无目录兜底（一层 glob）
+
+
+def _on_disk_file_matches(val, folders: list[str]) -> bool:
+    """枚举快照里没有、但本机 models/ 里确有这个文件 → 视为合法。"""
+    try:
+        from .world import file_on_disk
+        return file_on_disk(str(val), folders or None) is not None
+    except Exception:
+        return False
 
 
 def _folder_of_input(knowledge: Knowledge, cls: str, input_name: str) -> Optional[str]:

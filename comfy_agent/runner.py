@@ -30,6 +30,49 @@ from .validate import validate_workflow, ValidationIssue
 MAX_DETERMINISTIC_ROUNDS = 3
 
 
+def _model_present(knowledge, name: str, folders: list) -> bool:
+    """"这个模型在不在"的**严格**判断（同名或落盘）。
+
+    以前这里用 find_model（模糊）：`new.safetensors` 会命中 `old.safetensors`，
+    于是"缺模型"被漏报，随后服务器拒收、或大脑把名字改写成另一个模型。
+    """
+    for fn in ("model_exists", "model_available"):
+        f = getattr(knowledge, fn, None)
+        if f is not None:
+            try:
+                return bool(f(name, folders=folders))
+            except TypeError:
+                return bool(f(name))
+    return bool(knowledge.find_model(name, folders=folders))
+
+
+def _model_available(knowledge, name: str, folders: list) -> bool:
+    """落盘兜底可用性（判缺前复核：文件真在盘上就不该报缺）。"""
+    try:
+        return bool(knowledge.model_available(name, folders=folders))
+    except AttributeError:      # 老版本 Knowledge（无落盘兜底）
+        return bool(knowledge.find_model(name, folders=folders))
+
+
+#: 尺寸/时长类参数名：模板不支持时必须拦在执行前（静默忽略会让交付与实际不符）
+_SIZE_LIKE_PARAMS = frozenset((
+    "width", "height", "size", "resolution", "megapixels", "length",
+    "frames", "num_frames", "duration", "seconds", "fps", "scale",
+))
+
+
+def _size_hint(template_id: str) -> str:
+    """按模板给可执行的替代做法（别让大脑自己猜）。"""
+    hints = {
+        "i2i": "i2i 的输出尺寸由**输入图**决定，不能直接指定宽高；"
+               "要放大用 upscale_pass(scale=N)，要从文字指定尺寸用 t2i(width/height)",
+        "style_transfer": "style_transfer 同样按输入图尺寸出图；"
+                          "要放大请接 upscale_pass(scale=N)",
+        "t2i": "t2i 支持 width/height（请按 1024 簇给值，SDXL 用 512 会明显掉质量）",
+    }
+    return hints.get(str(template_id), "请只使用该模板参数表里列出的参数名")
+
+
 def _emit_stage(stage: str, detail: dict = None):
     """懒导入事件总线（避免 brain↔comfy_agent 循环依赖）。"""
     try:
@@ -51,10 +94,12 @@ def _emit_event(name: str, detail: dict = None):
 def run_workflow(workflow_api: dict, *, source: str = "workflow",
                  client: Client = None, knowledge: Knowledge = None,
                  wait: bool = True, timeout: float = 1800.0,
-                 output_root=None, on_event=None) -> dict:
+                 output_root=None, on_event=None, criteria: str = None) -> dict:
     """通用执行管线。返回统一 WorkflowResult：
     {stage, ok, source, prompt_id, repairs, validation_issues,
-     server_errors, exec_error, suggestion, outputs, output_dir}"""
+     server_errors, exec_error, suggestion, outputs, output_dir}
+
+    criteria：本轮任务的验收判据（来自任务契约），用于强制评估——不再用通用套话。"""
     client = client or Client()
     knowledge = knowledge or Knowledge.build()
     # 可选自愈：ComfyUI 不可达且 AUTO_START_COMFY=1 时尽力拉起（默认关闭）
@@ -110,7 +155,7 @@ def run_workflow(workflow_api: dict, *, source: str = "workflow",
             if r.get("node_errors"):
                 errs = parse_server_validation_error(r)
                 server_errors.extend(errs)
-                fixed = _apply_server_fixes(wf, errs, knowledge)
+                fixed = _apply_server_fixes(wf, errs, knowledge, client)
                 if not fixed:
                     _emit_stage("repair_failed",
                                 {"detail": {"server": bool(server_errors)}})
@@ -183,8 +228,8 @@ def run_workflow(workflow_api: dict, *, source: str = "workflow",
                    "outputs": outs, "output_dir": str(out_dir)})
 
     # ---- stage6: 产物强制评估（引擎层保底，不依赖大脑是否记得）----
-    _force_video_evaluation(result, outs)
-    _force_image_evaluation(result, outs)
+    _force_video_evaluation(result, outs, criteria)
+    _force_image_evaluation(result, outs, criteria)
     return result
 
 
@@ -192,7 +237,8 @@ _VIDEO_EXTS = (".mp4", ".webm", ".mkv", ".mov")
 _IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".webp")
 
 
-def _force_image_evaluation(result: dict, outs: list) -> None:
+def _force_image_evaluation(result: dict, outs: list,
+                            criteria: str = None) -> None:
     """图像产物自动评估（EVAL_POLICY=off 时跳过；批量抽样 2 张）。
 
     大脑本应自行调 view_image 评估，但轻量模型经常跳过（实测连续 3 个
@@ -205,18 +251,25 @@ def _force_image_evaluation(result: dict, outs: list) -> None:
               and str(o["local_path"]).lower().endswith(_IMAGE_EXTS)]
     if not images:
         return
+    crit = criteria or "画面清晰完整、主体明确、无肢体或结构畸形、无文字水印"
     try:
         from brain.eval import evaluate
         from brain.events import emit
-        eval_result = evaluate(images, "画面清晰完整、主体明确、无肢体或结构畸形、"
-                               "无文字水印", sample=2)
+        eval_result = evaluate(images, crit, sample=2)
         d = eval_result.to_dict()
         verdict = d.pop("ok", None)
+        # 语义没查（VLM 不可用）时不许报"通过"：只有几何检查过了而已
+        semantic_ok = not d.get("vlm_error")
+        if not semantic_ok:
+            verdict = None
         d["verdict"] = verdict
+        d["criteria"] = crit
+        d["semantic_checked"] = semantic_ok
         result["evaluation"] = d
         emit("evaluation", {
             "kind": "image_forced", "verdict": verdict,
             "prompt_id": result.get("prompt_id"),
+            "criteria": crit, "semantic_checked": semantic_ok,
             "score": (d.get("vlm") or [{}])[0].get("score")
             if d.get("vlm") else None,
             "issues": [
@@ -233,7 +286,8 @@ def _force_image_evaluation(result: dict, outs: list) -> None:
         result["evaluation"] = {"error": str(e)[:200]}
 
 
-def _force_video_evaluation(result: dict, outs: list) -> None:
+def _force_video_evaluation(result: dict, outs: list,
+                            criteria: str = None) -> None:
     """视频产物自动抽帧评估（EVAL_POLICY=off 时跳过）。
     懒导入 brain.eval（避免循环依赖，与 _emit_stage 同模式）。"""
     if config.EVAL_POLICY == "off":
@@ -243,17 +297,23 @@ def _force_video_evaluation(result: dict, outs: list) -> None:
               and str(o["local_path"]).lower().endswith(_VIDEO_EXTS)]
     if not videos:
         return
+    crit = criteria or "视频帧质量良好，主体清晰，动作连贯无明显畸形"
     try:
         from brain.eval import evaluate_video
         from brain.events import emit
-        eval_result = evaluate_video(videos[0], "视频帧质量良好，主体清晰，"
-                                     "动作连贯无明显畸形", frames=4)
+        eval_result = evaluate_video(videos[0], crit, frames=4)
         d = eval_result.to_dict()
         verdict = d.pop("ok", None)
+        semantic_ok = not d.get("vlm_error")
+        if not semantic_ok:
+            verdict = None
         d["verdict"] = verdict
+        d["criteria"] = crit
+        d["semantic_checked"] = semantic_ok
         result["evaluation"] = d
         emit("evaluation", {"kind": "video_forced", "verdict": verdict,
                             "prompt_id": result.get("prompt_id"),
+                            "criteria": crit, "semantic_checked": semantic_ok,
                             "score": (d.get("vlm") or [{}])[0].get("score")
                             if d.get("vlm") else None,
                             "issues": [
@@ -276,10 +336,14 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     current_upload = kw.pop("current_upload", None)
     tpl = get_template(template_id)
     if tpl is None:
-        _emit_stage("validation_failed",
-                    {"error": f"未知模板: {template_id}"})
-        return {"ok": False, "stage": "render_failed",
-                "error": f"未知模板: {template_id}"}
+        err = (f"未知模板 {template_id!r}：请用 list_templates 查可用模板 id"
+               if str(template_id or "").strip() else
+               "缺少 template_id：run_template 必须给 template_id"
+               "（先 list_templates 查 id，再按其参数表调用）")
+        _emit_stage("validation_failed", {"error": err})
+        return {"ok": False, "stage": "render_failed", "error": err,
+                "missing_arg": "template_id"
+                if not str(template_id or "").strip() else None}
     # 参数幻觉警告：大脑发明的参数名（duration/num_frames 等）不再被
     # 静默忽略——执行照常，但结果中显式告知哪些参数未生效
     known = {prm.name for prm in tpl.params()}
@@ -288,6 +352,19 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     # 顺序：别名/单位归一 → 模型适配 → 参数护栏 → 提示词体检
     params, unit_notes = tpl.normalize_params(params)
     unknown = [k for k in params if k not in known]
+    # 尺寸/时长类参数写错必须**拦在执行前**：实测 i2i 的 width/height 被静默
+    # 忽略，交付里却仍写着"1024x1536"，用户看到的是与实际不符的信息。
+    size_like = [k for k in unknown
+                 if k.lower() in _SIZE_LIKE_PARAMS]
+    if size_like:
+        err = (f"模板 {template_id} 不支持参数 {size_like}，已阻止执行"
+               "（尺寸/时长被静默忽略会导致交付描述与实际不符）。"
+               f"该模板支持的参数：{sorted(known)}。{_size_hint(template_id)}")
+        _emit_stage("validation_failed", {"error": err})
+        return {"ok": False, "stage": "render_failed", "error": err,
+                "unsupported_params": size_like,
+                "supported_params": sorted(known),
+                "hint": _size_hint(template_id)}
     # 跨设备模型适配：默认/显式 checkpoint 本机不存在时，自动绑定本机模型
     params, adapt_notes = adapt_ckpt(tpl, params, knowledge)
     params, guard_notes = _guard_params(tpl, params)
@@ -306,10 +383,18 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     ckpt_ok = bool(params.get("ckpt")) and \
         checkpoint_exists(knowledge, params["ckpt"])
     # 已适配的 checkpoint 不再算缺失；其余模型（controlnet/vae/视频文件等）
-    # 缺失仍按缺模型报错
+    # 缺失仍按缺模型报错。
+    # 判"缺"之前先让世界模型（含落盘兜底）复核：缓存是快照、会过期，
+    # 文件确实在盘上就不该再报缺（项目 5：下完模型仍判缺的根因之一）
     missing = [m for m in tpl.models_used
-               if not knowledge.find_model(m, folders=_folders_for(m))
+               if not _model_present(knowledge, m, _folders_for(m))
                and not (ckpt_ok and m == ckpt_default)]
+    if missing:
+        rescued = [m for m in missing
+                   if _model_available(knowledge, m, _folders_for(m))]
+        if rescued:
+            # 命中的模型写回清单，后续校验与模板渲染也能用上
+            missing = [m for m in missing if m not in rescued]
     all_notes = list(unit_notes) + list(adapt_notes) + list(guard_notes) \
         + list(prompt_notes) + list(upload_notes) + list(model_notes)
     if missing:
@@ -493,8 +578,14 @@ def upload_input_image(path: str | Path, client: Client = None) -> str:
     return r.get("name", Path(path).name)
 
 
-def _apply_server_fixes(wf: dict, errs: list[dict], knowledge) -> list:
-    """服务器校验错误的参数级自动修复（确定性）。"""
+def _apply_server_fixes(wf: dict, errs: list[dict], knowledge,
+                        client: Client = None) -> list:
+    """服务器校验错误的参数级自动修复（确定性）。
+
+    旧实现拿**本地快照**的 choices[0] 顶上：快照过期时会把请求的模型静默换成
+    另一个（项目 5 里就是"下完模型仍不认"的同一批缓存）。现在以**服务器实时
+    选项**为准；拿不到实时选项就**不替换**，把问题交回大脑（可见、不猜）。
+    """
     fixes = []
     for e in errs:
         node_id = str(e.get("node") or "")
@@ -503,11 +594,32 @@ def _apply_server_fixes(wf: dict, errs: list[dict], knowledge) -> list:
             continue
         if "not in choices" in (e.get("message") or ""):
             inp = e.get("input")
-            if inp:
+            if not inp:
+                continue
+            old = node["inputs"].get(inp)
+            choices = None
+            if client is not None:
+                try:
+                    choices = knowledge.live_choices(node["class_type"], inp,
+                                                     client=client)
+                except TypeError:
+                    try:
+                        choices = knowledge.live_choices(node["class_type"], inp)
+                    except Exception:
+                        choices = None
+                except Exception:
+                    choices = None
+            source = "服务器实时清单"
+            if not choices:
                 choices = knowledge.enum_choices(node["class_type"], inp)
-                if choices:
-                    old = node["inputs"].get(inp)
-                    node["inputs"][inp] = choices[0]
-                    fixes.append({"node": node_id, "input": inp,
-                                  "was": old, "now": choices[0]})
+                source = "本地快照"
+            if not choices:
+                fixes.append({"node": node_id, "input": inp, "was": old,
+                              "now": None, "applied": False,
+                              "reason": "拿不到合法选项，保留原值交回大脑"})
+                continue
+            node["inputs"][inp] = choices[0]
+            fixes.append({"node": node_id, "input": inp, "was": old,
+                          "now": choices[0], "applied": True,
+                          "source": source})
     return fixes

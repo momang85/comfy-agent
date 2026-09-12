@@ -123,6 +123,9 @@ HTTP_TIMEOUT = int(os.environ.get("COMFY_HTTP_TIMEOUT", "30"))
 POLL_INTERVAL = 2.0          # /history 轮询间隔（秒）
 MAX_REPAIR_ATTEMPTS = 3      # 修复重试上限
 BATCH_SIZE_LIMIT = 8         # 单次批量上限（12GB 显存保护）
+# 世界模型（节点签名/模型清单）快照的新鲜度上限（秒）：超过就重取。
+# 旧实现无 TTL，下载了模型/装了节点系统仍用旧镜像判"缺"（项目 5 实证）。
+WORLD_SNAPSHOT_TTL = int(os.environ.get("WORLD_SNAPSHOT_TTL", "600"))
 
 for _d in (SESSIONS_DIR, KNOWLEDGE_DIR, RESULTS_DIR):
     _d.mkdir(parents=True, exist_ok=True)

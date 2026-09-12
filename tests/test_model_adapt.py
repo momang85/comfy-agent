@@ -188,6 +188,25 @@ class RecordingClient:
 
 
 class TestRunTemplateIntegration(unittest.TestCase):
+    """注意：这些用例模拟"别的机器"，必须把 MODELS_DIR 隔离到空目录。
+
+    引擎现在会做落盘兜底（缓存没命中但文件真在盘上就不算缺），如果不隔离，
+    开发机上真实存在的 novaAnimeXL 会让"本机没 checkpoint"的用例假通过。
+    """
+
+    def setUp(self):
+        import tempfile
+        from comfy_agent import config
+        self._tmp = Path(tempfile.mkdtemp(prefix="adapt_models_"))
+        self._old = config.MODELS_DIR
+        config.MODELS_DIR = self._tmp
+
+    def tearDown(self):
+        import shutil
+        from comfy_agent import config
+        config.MODELS_DIR = self._old
+        shutil.rmtree(self._tmp, ignore_errors=True)
+
     def test_friend_machine_t2i_auto_adapts(self):
         """朋友设备没有 novaAnimeXL，只有一个任意 SDXL 模型 → t2i 照常出图。"""
         from comfy_agent.runner import run_template

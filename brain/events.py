@@ -124,9 +124,19 @@ class SessionAdapter:
 
     def on_event(self, msg: dict):
         with self._lock:
-            with self.path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(msg, ensure_ascii=False,
-                                   default=str) + "\n")
+            try:
+                with self.path.open("a", encoding="utf-8") as f:
+                    f.write(json.dumps(msg, ensure_ascii=False,
+                                       default=str) + "\n")
+            except Exception as e:
+                # 审计日志写失败必须留痕：静默丢弃会让"某轮没有回复"这类
+                # 现象无法复盘（项目 5 里就有一轮 delivery 缺失且查不出原因）
+                self.write_failures = getattr(self, "write_failures", 0) + 1
+                try:
+                    print(f"[events] 审计日志写入失败 #{self.write_failures} "
+                          f"({msg.get('event')}): {e}", flush=True)
+                except Exception:
+                    pass
 
 
 def attach_session_logger() -> SessionAdapter:
