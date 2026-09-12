@@ -39,6 +39,15 @@ def _emit_stage(stage: str, detail: dict = None):
         pass
 
 
+def _emit_event(name: str, detail: dict = None):
+    """发一个非阶段事件（前端另有专门分派，不占用阶段状态机）。"""
+    try:
+        from brain.events import emit
+        emit(name, detail or {})
+    except Exception:
+        pass
+
+
 def run_workflow(workflow_api: dict, *, source: str = "workflow",
                  client: Client = None, knowledge: Knowledge = None,
                  wait: bool = True, timeout: float = 1800.0,
@@ -301,12 +310,20 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     if missing:
         _emit_stage("validation_failed",
                     {"error": f"缺少模型: {missing}"})
+        # 缺模型是"可修复的失败"：把待下载文件名显式交给大脑，让它用
+        # search_models/download_model 走"搜索→用户确认→下载"路径
+        _emit_event("model_missing",
+                    {"models": missing, "template": template_id})
         early = {"ok": False, "stage": "render_failed",
                  "error": f"模板 {template_id} 缺少模型: {missing}",
                  "missing_models": missing,
                  "hint": ("图像模板会自动适配本机任意 SDXL/SD1.5 checkpoint"
                           "（可用 settings.json 的 model_prefs 指定偏好）；"
-                          "视频模板需安装对应模型文件，见 README 模型要求")}
+                          "视频模板需安装对应模型文件，见 README 模型要求"),
+                 "next_step": ("先调用 search_models(filename=<缺失文件名>, "
+                               "folder=<所在 models 子目录>) 查可下载来源，"
+                               "拿到候选后调用 download_model 弹窗征求用户同意；"
+                               "用户拒绝或下载失败再走缺模型降级。")}
         if all_notes:
             early["warnings"] = all_notes      # 参数收敛/提示词体检结果别丢
             for w in all_notes:

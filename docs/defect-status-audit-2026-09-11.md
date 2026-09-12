@@ -1,7 +1,7 @@
 # 缺陷台账审计（逐条对照代码 · 2026-09-11）
 
 方法：不采信文档自述，逐项在**当前代码**里核对修复是否真的存在。证据列为 file:line。
-单测：`python -B -m unittest discover -s tests` → **148 tests OK**。
+单测：`python -B -m unittest discover -s tests` → **148 tests OK**（2026-09-12 追加缺模型下载后为 **181 tests OK**）。
 
 ## 一、状态总表
 
@@ -46,3 +46,15 @@
 
 台账 24 项中 **21 项已修复且有代码证据**，2 项属"按设计仅改表述/登记待办"（音频、时长核对），
 1 项（LTX 设计风险）经代码签名核实为**真 bug**，随本轮 LTX 修复解决。除登记项外无回归。
+
+## 四、2026-09-12 追加：缺模型下载功能实测暴露的缺陷
+
+详见 `docs/missing-model-download-2026-09-12.md`。四条均由本轮**真机真网络**测试发现：
+
+| ID | 问题 | 根因 | 修复点 | 状态 |
+|---|---|---|---|---|
+| D1 | `COMFY_ROOT` 形态混用：`comfy_root.local`/`一键启动.bat` 存整合包根（`…-v3`），`config.py` 期望 ComfyUI 目录（`…-v3\ComfyUI`）→ `MODELS_DIR`/`MANAGER_CACHE`/`INPUT_DIR`/`OUTPUT_DIR` 全部指向不存在路径，`knowledge._load_manager_extmap()` 静默返回 `{}` | 启动脚本与配置各自定义 COMFY_ROOT，无归一 | `config.py:_normalize_comfy_root()`（两种形态都认）；回归测试 `test_settings.py::test_comfy_root_accepts_portable_root` | ✅ FIXED |
+| D2 | 大脑自拼 HuggingFace 地址（实测 401）并自估大小（4.71MB → 1.2GB） | 工具未强制"照抄候选"，无二次校验 | `tools.py:_pick_cached_candidate` + `url_corrected`；`model_download.request` 弹窗前 HEAD 探测、差异 >20% 写入 `warnings`；规则 13 明确禁止 | ✅ FIXED |
+| D3 | 下载校验以"登记大小"判偏小 → 大脑估错时误杀正确文件 | 基准取错 | `_run` 改用本次传输的 `Content-Length`（权威） | ✅ FIXED |
+| D4 | 候选文件名匹配过宽：`definitely-not-a-real-model-xyz.safetensors` 命中 `model.safetensors` | `_score_filename` 双向子串判据 | 改为同名/前缀/公共前缀占比 | ✅ FIXED |
+| D5 | 单测真出网 + `HTTPError` 未关闭（ResourceWarning 401） | 测试未隔离网络；异常分支未 `close()` | 测试注入假 resolver/`_head_size`/`_open_stream`；`_head_size` 的 `HTTPError` 分支 `e.close()` | ✅ FIXED |

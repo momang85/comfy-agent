@@ -24,7 +24,25 @@ def _default_comfy_root() -> str:
     return ""
 
 
-COMFY_ROOT = Path(os.environ.get("COMFY_ROOT", _default_comfy_root()))
+def _normalize_comfy_root(raw: str) -> Path:
+    """COMFY_ROOT 归一为**ComfyUI 安装目录**（其下有 models/ 与 main.py）。
+
+    install.bat/一键启动.bat 存的 comfy_root.local 是**整合包根目录**
+    （python\\python.exe 与 ComfyUI\\main.py 在那里），配置读取的是 ComfyUI
+    子目录的 models/ 与 user/__manager/cache。两种形态都要认，否则
+    MODELS_DIR/MANAGER_CACHE 全指向不存在的路径，相关增强功能静默失效。
+    """
+    p = Path(raw)
+    if (p / "models").is_dir() or (p / "main.py").exists():
+        return p
+    nested = p / "ComfyUI"
+    if (nested / "main.py").exists() or (nested / "models").is_dir():
+        return nested
+    return p
+
+
+COMFY_ROOT = _normalize_comfy_root(
+    os.environ.get("COMFY_ROOT", _default_comfy_root()))
 MODELS_DIR = COMFY_ROOT / "models"
 INPUT_DIR = COMFY_ROOT / "input"
 OUTPUT_DIR = COMFY_ROOT / "output"

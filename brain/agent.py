@@ -315,6 +315,7 @@ class Brain:
 7. **交付格式**：完成时用中文总结：做了什么（模板/关键参数）→ 产物在哪（本地路径）→ 评估结论。不再调用工具时输出纯文本即结束。
 8. 模型/节点不确定时用 list_models / search_nodes / learn_node 查询，不要猜。
 9. **模型自动适配**：图像模板（t2i/i2i/style_transfer/upscale_pass）的 checkpoint 会自动绑定本机模型——除非用户点名用某模型，否则不要传 ckpt 参数；技能文档里出现具体模型名只是开发机示例，本机缺失时引擎会自动换成同家族模型（settings.json 的 model_prefs 可指定偏好）。
+13. **缺模型先找来源再问用户**：执行结果报 `missing_models` 时，先 `search_models(filename=<缺的文件名>, folder=<models 子目录>)` 查可下载来源（本机 Manager 目录 + HF/hf-mirror/Civitai/ModelScope），再用 `download_model` 请求下载——**url/filename/folder/size 必须原样照抄候选字段**：不要自己拼 HuggingFace 地址（实测拼出来的都是 404），也不要自己估算大小（实测把 4.71MB 写成 1.2GB）。系统会弹出确认弹窗（显示名称/大小/来源/是否适配/目标目录），**由用户决定下载与否**；工具会立刻返回，此时不要重复调用、不要自己假设用户同意。用户同意→系统自动下载并重跑刚才失败的任务；拒绝或下载失败→按规则 12 走缺模型降级，并明确告诉用户缺哪个文件、应该放到本机哪个目录。
 
 ## 领域技能库（节点速查 + 建图方法论，自由合成必读）
 {skills_blob}"""}]

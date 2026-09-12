@@ -42,6 +42,7 @@ ComfyUI (127.0.0.1:8188，绘世启动器启动)
 
 - **路径零硬编码**：工作区/产物/设置都基于项目根目录推导；ComfyUI 目录经 `install.bat`（Windows）或 `COMFY_ROOT` 环境变量指定
 - **模型名自动适配**：模板默认模型（novaAnimeXL 等）本机不存在时，图像模板自动绑定你本机的同家族 checkpoint（`model_prefs` 可指定偏好）；视频模板才需要按名安装对应模型
+- **缺模型可搜可下**：真的缺模型时，大脑会去本机 ComfyUI-Manager 目录 + HuggingFace/hf-mirror/Civitai/ModelScope 找来源，弹出确认窗（文件名/大小/来源/是否适配本机/存放目录），你点「下载」后在同一个窗口看进度（百分比/速度/耗时，可取消）；成功后自动重跑刚才失败的任务。拒绝或下载失败按原有降级路径处理（告知缺哪个文件、该放到哪个目录）
 - **ffmpeg 可选**：仅视频抽帧评估用到，`FFMPEG_PATH` 环境变量或 PATH 里能找到即可
 - **无注册表依赖**：API key 读取链为 环境变量 → settings.json → （Windows）注册表，非 Windows 环境跳过注册表
 
@@ -105,12 +106,16 @@ python -m brain "画一只赛博朋克橘猫，1024x1024，4张"   # 一次性�
 | minimax_t2v / minimax_i2v | MiniMax H3 unet + turbo LoRA + qwen3vl + video vae | 视频模板按文件名匹配，需原名安装 |
 | ltx_i2v | LTX-2.3 checkpoint + LoRA + 本地 Gemma 编码器 | 同上 |
 
+> 以上文件本机没有时不用手动找：任务失败后大脑会搜索来源并弹窗征询是否下载（见「缺模型可搜可下」），
+> 下载完成的文件直接落到下表对应的 `ComfyUI/models/` 子目录。
+
 - **适配优先级**：`settings.json` 的 `model_prefs`（如 `{"sdxl": "我的模型.safetensors"}`）> 同家族模型 > 任意 checkpoint；适配成功时对话里会提示"已自动适配"
 - 想指定偏好模型：编辑 `.comfy-agent/settings.json` 加 `model_prefs` 字段即可
 - 视频/ControlNet/LoRA 的具体文件名见 `comfy_agent/templates/video.py`、`image.py` 顶部常量
 
 ### 4. FAQ
 - **我的模型名和 README 里不一样，会失败吗？** 图像模板不会——运行期自动绑定本机 checkpoint；只有视频模板按文件名找模型，需按原名安装。
+- **缺模型怎么办？** 大脑会自动查可下载来源并弹窗问你（大小/来源/是否适配本机/存到哪都写在弹窗里），你同意就下、下完自动重跑；不同意就按缺模型降级。下载只走公网 http/https（拒绝内网地址），落盘路径逐段校验且限制在 `models/` 内，单文件上限 40GB（`MODEL_DOWNLOAD_MAX_GB` 可调）。
 - **没有 NVIDIA 卡 / 显存小？** ComfyUI 低显存模式或 CPU 模式都能跑通全流程（慢一些）；执行期 OOM 时引擎自动降分辨率/批数并重试一次。
 - **key 安全吗？** 只存本机 `.comfy-agent/settings.json`（gitignored），只发给你自己配置的 LLM 地址；对话、记忆、产物全在本机。
 - **能用别的 LLM 吗？** 任意 OpenAI 兼容服务（DeepSeek/Kimi/OpenAI/本地 Ollama）都行，⚙ 面板改 base_url 与模型名，保存即热生效。
@@ -164,6 +169,7 @@ comfy_agent/          执行引擎（纯标准库，可独立使用）
   validate.py         本地预校验
   repair.py           自动修复（含 OOM 降参、同家族模型匹配）
   model_adapt.py      跨设备模型自动适配（默认 checkpoint 缺失→绑定本机同家族模型）
+  model_download.py   缺模型搜索+下载（公网地址校验/路径安全/四源搜索/后台下载）
   promptspec.py       提示词家族规范（SDXL标签/LTX英文/MiniMax中文）
   templates/          7 个模板
   runner.py           执行编排

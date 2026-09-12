@@ -7,6 +7,8 @@
 - POST /api/message {text, project_id, image?}   用户输入 → 该项目 Brain 工作线程
 - POST /api/upload  {project_id, name, data(base64)}  传图 → 落盘项目 uploads/ 并上传 ComfyUI /input
 - POST /api/interrupt       中断当前任务
+- GET  /api/model-downloads?project=  缺模型下载任务列表
+- POST /api/model-download {download_id, action: confirm|decline|cancel}
 - GET  /api/outputs/*       产物文件（路径白名单防穿越）
 - GET  / /app.js /style.css 静态页
 """
@@ -209,6 +211,74 @@ class WebSession:
 
 SESSION: WebSession | None = None
 
+# 自动重跑记账：同一 项目|模板|文件名 只自动重跑一次，防"下载→仍缺失→再弹窗"循环
+_AUTO_RETRY: dict[str, int] = {}
+_AUTO_RETRY_LIMIT = 1
+
+
+def _download_event(event: str, payload: dict, project_id: str | None) -> None:
+    """下载器事件 → SSE（带项目标签，前端按当前项目过滤）。"""
+    with project_context(project_id):
+        ev.emit(event, payload)
+
+
+def _download_finished(rec: dict) -> None:
+    """下载结束（成功/拒绝/失败）→ 给该项目大脑投递一条系统消息。
+
+    成功：自动重跑刚才因缺模型失败的任务；拒绝/失败：按缺模型降级。
+    """
+    if SESSION is None:
+        return
+    state = rec.get("state")
+    pid = rec.get("project") or SESSION.default_id
+    try:
+        bs = SESSION.session_for(pid)
+    except Exception:
+        return
+    name = rec.get("filename") or "模型"
+    retry = rec.get("retry") or {}
+    tid = retry.get("template")
+    key = f"{pid}|{tid}|{name}"
+    if state == "done":
+        if _AUTO_RETRY.get(key, 0) >= _AUTO_RETRY_LIMIT:
+            text = (f"[system] 模型 {name} 已下载完成，但该任务已自动重跑过一次，"
+                    "不再重复执行。请告知用户模型已就绪、可按需再次发起。")
+        else:
+            _AUTO_RETRY[key] = _AUTO_RETRY.get(key, 0) + 1
+            text = (f"[system] 缺失模型 {name} 已下载完成"
+                    f"（{rec.get('size_text')}）→ {rec.get('dest')}。"
+                    "请立即重新执行刚才因缺模型失败的任务")
+            if tid:
+                text += ("：run_template(template_id=" + json.dumps(tid)
+                         + ", params="
+                         + json.dumps(retry.get("params") or {},
+                                      ensure_ascii=False) + ")")
+            text += "。这次应能通过模型校验，不要再走搜索/下载流程。"
+    elif state == "declined":
+        text = (f"[system] 用户拒绝下载缺失模型 {name}。按失败处理顺序走缺模型降级："
+                "换用不需要该文件的等价模板，或明确告知用户缺哪个文件、"
+                "应放到本机哪个目录（含手动下载地址）。")
+    elif state == "failed":
+        text = (f"[system] 模型 {name} 下载失败：{rec.get('error') or '未知原因'}。"
+                "按失败处理顺序走缺模型降级，并把失败原因、文件名与目标目录"
+                "一并告知用户。")
+    else:
+        return
+    try:
+        bs.inbox.put({"text": text})
+    except Exception:
+        pass
+
+
+def bind_model_downloader() -> None:
+    """把引擎的下载管理器接到事件总线 + 自动重跑钩子（启动时调一次）。"""
+    try:
+        from comfy_agent import model_download
+        model_download.bind_emitter(_download_event,
+                                    finish_hook=_download_finished)
+    except Exception:
+        pass
+
 
 def get_settings() -> dict:
     """当前生效配置（key 脱敏）+ settings.json 中已保存的字段。"""
@@ -298,6 +368,8 @@ class Handler(BaseHTTPRequestHandler):
                                             for p in SESSION.store.list()]})
         if path == "/api/settings":
             return self._json(get_settings())
+        if path == "/api/model-downloads":
+            return self._get_model_downloads(q.get("project", [None])[0])
         if path.startswith("/api/outputs/"):
             return self._serve_output(path[len("/api/outputs/"):])
         self.send_error(404)
@@ -312,11 +384,48 @@ class Handler(BaseHTTPRequestHandler):
             return self._post_project()
         if parsed.path == "/api/settings":
             return self._post_settings()
+        if parsed.path == "/api/model-download":
+            return self._post_model_download()
         if parsed.path == "/api/interrupt":
             s = SESSION.session_for(None)
             s.brain.ctx.client.interrupt()
             return self._json({"ok": True})
         self.send_error(404)
+
+    def _get_model_downloads(self, project_id):
+        """下载任务列表（前端刷新/换项目后恢复弹窗状态）。"""
+        from comfy_agent import model_download
+        pid = project_id or (SESSION.default_id if SESSION else None)
+        items = [r for r in model_download.MANAGER.active()
+                 if r.get("project") in (pid, None)]
+        return self._json({"ok": True, "downloads": items})
+
+    def _post_model_download(self):
+        """用户在弹窗里的决定：confirm 开始下载 / decline 拒绝 / cancel 取消。"""
+        from comfy_agent import model_download as md
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        try:
+            data = json.loads(_decode_body(body))
+            did = str(data.get("download_id") or "")
+            action = str(data.get("action") or "")
+        except json.JSONDecodeError:
+            return self.send_error(400)
+        if not did or action not in ("confirm", "decline", "cancel"):
+            return self._json({"ok": False, "error": "参数错误"}, code=400)
+        try:
+            if action == "confirm":
+                rec = md.MANAGER.confirm(did)
+            elif action == "decline":
+                rec = md.MANAGER.decline(did)
+            else:
+                rec = md.MANAGER.cancel(did)
+        except md.DownloadError as e:
+            return self._json({"ok": False, "error": str(e)}, code=404)
+        except Exception as e:
+            return self._json({"ok": False,
+                               "error": f"{type(e).__name__}: {e}"}, code=500)
+        return self._json({"ok": True, "download": rec})
 
     def _post_settings(self):
         """保存用户设置（settings.json 本地落盘，gitignored）+ 热生效。"""
@@ -530,6 +639,7 @@ def serve(port: int = PORT, open_browser: bool = True):
     global SESSION
     SESSION = WebSession()
     SESSION.start_monitors()
+    bind_model_downloader()
     # PID 文件：供一键启动脚本精确识别/清理本服务进程
     pidfile = config.AGENT_HOME / "webui.pid"
     try:

@@ -792,6 +792,132 @@ def tool_propose_edit(ctx: ToolContext, args: dict) -> dict:
     return {"ok": True, **result, "summary": ctx.synth.summary()}
 
 
+# ---------------- 缺模型搜索 / 下载 ----------------
+
+def _free_vram_gb(ctx: ToolContext) -> float | None:
+    """当前空闲显存（GB），取不到返回 None（仅用于适配建议）。"""
+    try:
+        stats = ctx.client.system_stats()
+        best = 0
+        for d in stats.get("devices", []):
+            best = max(best, d.get("vram_free", 0))
+        return round(best / 1e9, 1) if best else None
+    except Exception:
+        return None
+
+
+def _retry_context(ctx: ToolContext, args: dict) -> dict:
+    """下载成功后要自动重跑的任务描述（优先工具入参，否则用当前草稿）。"""
+    tid = args.get("retry_template") or ctx.draft_meta.get("template_id")
+    if not tid:
+        return {}
+    return {"template": tid,
+            "params": args.get("retry_params")
+            or ctx.draft_meta.get("params") or {}}
+
+
+def tool_search_models(ctx: ToolContext, args: dict) -> dict:
+    """搜索缺失模型的可下载来源（只读，不落盘不弹窗）。
+    args: {filename: "缺哪个文件", folder?: "models 子目录",
+           offline?: true 只用本机 Manager 目录}"""
+    from comfy_agent import model_download as md
+    filename = str(args.get("filename") or args.get("name") or "").strip()
+    if not filename:
+        return {"ok": False, "error": "缺少 filename（要下载的模型文件名）"}
+    folder = args.get("folder") or None
+    try:
+        cands = md.search_models(filename, folder=folder,
+                                 vram_free_gb=_free_vram_gb(ctx),
+                                 offline=bool(args.get("offline")),
+                                 limit=int(args.get("limit") or 8))
+    except Exception as e:
+        return {"ok": False, "error": f"搜索失败：{type(e).__name__}: {e}",
+                "hint": "搜索失败按缺模型降级处理，不要反复重试同一来源"}
+    if not cands:
+        return {"ok": True, "query": filename, "count": 0, "candidates": [],
+                "hint": ("没有找到可下载来源。按缺模型降级：换用不需要该模型的"
+                         "等价模板，或告知用户需自行安装该文件")}
+    brief = [{"filename": c["filename"], "folder": c["folder"],
+              "source": c["source"], "size_text": c["size_text"],
+              "fits": c["fit"]["fits"], "target_dir": c["target_dir"],
+              "url": c["url"], "name": c["name"]} for c in cands]
+    # 记住候选：download_model 会据此校正大脑自拟/猜错的 url 与大小
+    # （实测大脑会把 4.71MB 的候选写成 1.2GB + 自己拼一个不存在的 HF 地址）
+    cache = ctx.draft_meta.setdefault("_model_candidates", {})
+    for c in cands:
+        cache.setdefault(c["filename"].lower(), []).append(c)
+    return {"ok": True, "query": filename, "count": len(brief),
+            "candidates": brief, "vram_free_gb": _free_vram_gb(ctx),
+            "hint": ("取第一条候选（已按匹配度排序）调用 download_model，"
+                     "url/filename/folder/size 一律原样照抄候选字段："
+                     "url 不要自己拼（拼出来的地址实测 404），"
+                     "size 用候选的 size_text，不要自己估算。"
+                     "弹窗会显示名称/大小/来源/是否适配/目标目录，由用户决定是否下载。")}
+
+
+def _pick_cached_candidate(ctx: ToolContext, args: dict) -> dict | None:
+    """从上次 search_models 的候选里挑同文件同目录的一条（用于校正 url/大小）。"""
+    cache = (ctx.draft_meta or {}).get("_model_candidates") or {}
+    want = str(args.get("filename") or "").strip().lower()
+    if not want:
+        return None
+    cands = cache.get(want) or []
+    folder = str(args.get("folder") or "").strip()
+    for c in cands:
+        if not folder or c.get("folder") == folder:
+            return c
+    return cands[0] if cands else None
+
+
+def tool_download_model(ctx: ToolContext, args: dict) -> dict:
+    """请求下载缺失模型：登记后立刻返回，等用户在弹窗里确认。
+    args: {url, filename, folder, size?, source?, retry_template?,
+           retry_params?}"""
+    from comfy_agent import model_download as md
+    miss = [k for k in ("url", "filename", "folder") if not args.get(k)]
+    if miss:
+        return {"ok": False, "error": f"缺少必填参数 {miss}"}
+    url = str(args["url"])
+    size = md.parse_size(args.get("size") or args.get("size_bytes"))
+    source = str(args.get("source") or "")
+    substituted = False
+    cand = _pick_cached_candidate(ctx, args)
+    if cand is not None:
+        # 候选来自权威目录（含真实 url/大小/来源）：大脑给的与候选不一致时以候选为准
+        if cand.get("url") and cand["url"] != url:
+            url = cand["url"]
+            substituted = True
+        if substituted or not source:
+            source = str(cand.get("source") or source)
+        if cand.get("size"):
+            size = int(cand["size"])
+    try:
+        rec = md.MANAGER.request(
+            url, str(args["filename"]), str(args["folder"]),
+            source=source, size=size, project_id=ctx.project_id,
+            retry=_retry_context(ctx, args),
+            note=str(args.get("note") or ""),
+            name=str(args.get("name") or (cand or {}).get("name") or ""))
+    except md.DownloadError as e:
+        return {"ok": False, "error": str(e),
+                "hint": ("该候选不可用（地址或落盘路径未通过安全校验/超出上限）。"
+                         "换 search_models 返回的其它候选，或按缺模型降级")}
+    out = {"ok": True, "state": rec["state"], "download_id": rec["id"],
+           "filename": rec["filename"], "size_text": rec["size_text"],
+           "source": rec["source"], "dest": rec["dest"],
+           "fits": rec["fit"]["fits"],
+           "fit_notes": list(rec["fit"]["notes"]) + list(rec.get("warnings") or []),
+           "awaiting_confirm": True,
+           "note": ("下载确认弹窗已弹出，等待用户决定——不要重复调用本工具、"
+                    "不要自行判断用户是否同意。用户确认后系统会自动重跑刚才"
+                    "失败的任务；用户拒绝或下载失败时，按缺模型降级继续。")}
+    if substituted:
+        out["url_corrected"] = True
+        out["note"] = ("你给的下载地址与 search_models 的权威候选不一致，"
+                       "已改用候选地址。 " + out["note"])
+    return out
+
+
 # ---------------- 注册表 ----------------
 
 TOOLS: dict[str, dict] = {
@@ -872,6 +998,19 @@ TOOLS: dict[str, dict] = {
     "read_skill": {"fn": tool_read_skill,
                    "desc": "按需读家族技能文档（节点家族接线方法论）",
                    "args": {"name": "str"}},
+    "search_models": {"fn": tool_search_models,
+                      "desc": "搜索缺失模型的可下载来源（本机 Manager 目录 + "
+                              "HF/hf-mirror/Civitai/ModelScope），返回大小/是否"
+                              "适配本机/应存放的目录",
+                      "args": {"filename": "str", "folder?": "str",
+                               "offline?": "bool"}},
+    "download_model": {"fn": tool_download_model,
+                       "desc": "请求下载缺失模型：弹出确认弹窗让用户决定，"
+                               "立刻返回不阻塞；用户同意后自动下载并重跑失败任务",
+                       "args": {"url": "str", "filename": "str",
+                                "folder": "str", "size?": "str",
+                                "source?": "str", "retry_template?": "str",
+                                "retry_params?": "dict"}},
 }
 
 

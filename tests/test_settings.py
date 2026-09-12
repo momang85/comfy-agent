@@ -4,6 +4,7 @@ import os
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -81,11 +82,30 @@ class TestPortability(unittest.TestCase):
     def test_ffmpeg_finder_env_priority(self):
         import brain.eval.video as v
         from importlib import reload
-        with unittest.mock.patch.dict(os.environ,
-                                      {"FFMPEG_PATH": "C:/my/ffmpeg.exe"}):
+        with mock.patch.dict(os.environ,
+                             {"FFMPEG_PATH": "C:/my/ffmpeg.exe"}):
             reload(v)
             self.assertEqual(v.FFMPEG, "C:/my/ffmpeg.exe")
         reload(v)   # 恢复
+
+    def test_comfy_root_accepts_portable_root(self):
+        """comfy_root.local/一键启动.bat 存的是整合包根目录（python\\python.exe
+        与 ComfyUI\\main.py 在那里）；配置必须归一为内层 ComfyUI 目录，否则
+        MODELS_DIR/MANAGER_CACHE 指向不存在的路径、缓存增强静默失效。"""
+        import tempfile
+        from comfy_agent.config import _normalize_comfy_root
+        with tempfile.TemporaryDirectory() as tmp:
+            portable = Path(tmp) / "ComfyUI-aki-v3"
+            inner = portable / "ComfyUI"
+            (inner / "models").mkdir(parents=True)
+            (inner / "main.py").write_text("", encoding="utf-8")
+            (portable / "python").mkdir()
+            self.assertEqual(_normalize_comfy_root(str(portable)), inner)
+            self.assertEqual(_normalize_comfy_root(str(inner)), inner)
+            # 两种形态都不像 ComfyUI 时原样返回（不猜、不报错）
+            other = Path(tmp) / "not-comfy"
+            other.mkdir()
+            self.assertEqual(_normalize_comfy_root(str(other)), other)
 
 
 if __name__ == "__main__":

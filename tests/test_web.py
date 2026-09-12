@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Web UI 支撑层单测：事件总线 / 会话适配器 / 流式解析 / 路径防穿越。"""
 import json
+import queue
 import sys
 import threading
 import unittest
@@ -161,6 +162,80 @@ class TestUploadValidation(unittest.TestCase):
         self.assertEqual(safe_upload_name("noext"), "noext.png")
         self.assertEqual(safe_upload_name("evil.exe"), "evil.png")
         self.assertTrue(safe_upload_name("ok_1.PNG").endswith(".png"))
+
+
+class TestDownloadAutoRerun(unittest.TestCase):
+    """下载结束 → 大脑收件箱投递：成功自动重跑，拒绝/失败走降级。
+
+    用假的 SESSION 验证消息内容与"同一任务只自动重跑一次"的护栏，
+    不启动真服务器、不发事件。
+    """
+
+    def setUp(self):
+        from brain.web import server
+        self.server = server
+        self._old = server.SESSION
+        server._AUTO_RETRY.clear()
+
+        class _BS:
+            def __init__(self):
+                self.inbox = queue.Queue()
+
+        class _Sess:
+            default_id = "project"
+
+            def __init__(self):
+                self.bs = _BS()
+
+            def session_for(self, pid=None):
+                return self.bs
+
+        self.sess = _Sess()
+        server.SESSION = self.sess
+
+    def tearDown(self):
+        self.server.SESSION = self._old
+        self.server._AUTO_RETRY.clear()
+
+    def _rec(self, **kw):
+        base = {"state": "done", "filename": "m.safetensors",
+                "size_text": "4.71 MB", "dest": r"C:\models\vae_approx\m.safetensors",
+                "project": "project", "error": "",
+                "retry": {"template": "t2i", "params": {"prompt": "猫"}}}
+        base.update(kw)
+        return base
+
+    def test_success_enqueues_rerun_with_template(self):
+        self.server._download_finished(self._rec())
+        text = self.sess.bs.inbox.get_nowait()["text"]
+        self.assertIn("已下载完成", text)
+        self.assertIn("run_template", text)
+        self.assertIn("t2i", text)
+
+    def test_success_retries_only_once(self):
+        self.server._download_finished(self._rec())
+        self.sess.bs.inbox.get_nowait()
+        self.server._download_finished(self._rec())
+        text = self.sess.bs.inbox.get_nowait()["text"]
+        self.assertIn("已自动重跑过一次", text)
+        self.assertNotIn("run_template", text)
+
+    def test_declined_enqueues_degrade(self):
+        self.server._download_finished(self._rec(state="declined"))
+        text = self.sess.bs.inbox.get_nowait()["text"]
+        self.assertIn("拒绝", text)
+        self.assertIn("降级", text)
+
+    def test_failed_enqueues_reason(self):
+        self.server._download_finished(
+            self._rec(state="failed", error="HTTPError: 404"))
+        text = self.sess.bs.inbox.get_nowait()["text"]
+        self.assertIn("404", text)
+        self.assertIn("降级", text)
+
+    def test_canceled_does_not_message_brain(self):
+        self.server._download_finished(self._rec(state="canceled"))
+        self.assertTrue(self.sess.bs.inbox.empty())
 
 
 if __name__ == "__main__":

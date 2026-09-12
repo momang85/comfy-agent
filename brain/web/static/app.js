@@ -67,6 +67,9 @@ async function switchProject(pid) {
   if (st.project) activeProject = st.project;
   if (st.draft) renderGraph(st.draft);
   if (st.stage) setStage(st.stage);
+  mdlRec = null;
+  $("#modeldlmodal").classList.add("hidden");
+  refreshModelDownloads();
 }
 
 $("#newproject").addEventListener("click", async () => {
@@ -679,6 +682,15 @@ function handleEvent(msg) {
         : `队列 ${data.queue_position}`;
       break;
     }
+    case "model_missing": {
+      // 引擎报缺模型：提示条先给一句（随后大脑会弹下载确认框）
+      const names = (data.models || []).join("、");
+      showWarning(`缺少模型：${names}（正在查询可下载来源）`);
+      break;
+    }
+    case "model_download":
+      showModelDownload(data);
+      break;
   }
 }
 
@@ -774,6 +786,120 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) healthCheck();   // 标签页从休眠恢复时立即自检
 });
 
+// ---------- 缺失模型下载弹窗 ----------
+// 大脑发现缺模型 → search_models → download_model 弹出本弹窗；用户点"下载"
+// 后同一弹窗内变成进度条（含速度/取消），结束后关闭或展示失败原因。
+let mdlRec = null;
+
+// 下载来源的界面用名（内部键 → 中文）
+const MDL_SOURCES = {
+  manager: "本机 Manager 目录",
+  "hf-mirror": "HuggingFace 镜像",
+  hf: "HuggingFace",
+  civitai: "Civitai",
+  modelscope: "ModelScope",
+};
+
+function mdlRow(k, v) {
+  return `<div class="mdl-row"><span class="k">${escapeHtml(k)}</span>` +
+         `<span class="v">${escapeHtml(v == null ? "" : String(v))}</span></div>`;
+}
+
+function showModelDownload(rec) {
+  if (!rec || !rec.id) return;
+  if (activeProject && rec.project && rec.project !== activeProject.id) return;
+  // 已有下载在跑时不抢占弹窗（否则用户看不到进行中的那个）
+  if (mdlRec && mdlRec.id !== rec.id && mdlRec.state === "downloading"
+      && rec.state === "awaiting_confirm") {
+    showWarning(`已有下载进行中：${mdlRec.filename}`);
+    return;
+  }
+  mdlRec = rec;
+  const body = $("#mdl_body");
+  body.innerHTML =
+    mdlRow("文件", rec.filename) +
+    mdlRow("名称", rec.name && rec.name !== rec.filename ? rec.name : "—") +
+    mdlRow("大小", rec.size_text || "未知") +
+    mdlRow("来源", MDL_SOURCES[rec.source] || rec.source || "未知") +
+    mdlRow("适配", rec.fit && rec.fit.fits ? "适配本机" : "不适合本机") +
+    mdlRow("存放目录", rec.target_dir || rec.dest || "—");
+  const ok = $("#mdl_ok"), no = $("#mdl_no");
+  const cancel = $("#mdl_cancel"), close = $("#mdl_close");
+  const prog = $("#mdl_progress");
+  if (rec.state === "awaiting_confirm") {
+    const notes = ((rec.fit && rec.fit.notes) || []).concat(rec.warnings || []);
+    if (notes.length) {
+      body.innerHTML += `<div class="mdl-warn">⚠ ${escapeHtml(notes.join("；"))}</div>`;
+    }
+    prog.classList.add("hidden");
+    ok.classList.remove("hidden");
+    no.classList.remove("hidden");
+    cancel.classList.add("hidden");
+    close.classList.add("hidden");
+  } else if (rec.state === "downloading") {
+    ok.classList.add("hidden");
+    no.classList.add("hidden");
+    cancel.classList.remove("hidden");
+    close.classList.add("hidden");
+    prog.classList.remove("hidden");
+    $("#mdl_bar").style.width = (rec.percent || 0) + "%";
+    $("#mdl_stat").textContent =
+      `${(rec.percent || 0).toFixed(1)}% · ${rec.size_text || ""}` +
+      (rec.speed_text ? ` · ${rec.speed_text}` : "") +
+      (rec.elapsed ? ` · 已用 ${rec.elapsed}s` : "");
+  } else {
+    ok.classList.add("hidden");
+    no.classList.add("hidden");
+    cancel.classList.add("hidden");
+    close.classList.remove("hidden");
+    prog.classList.add("hidden");
+    const msg = rec.state === "done"
+      ? "✅ 下载完成，正在自动重跑刚才失败的任务…"
+      : rec.state === "declined" ? "已拒绝下载，大脑会按缺模型降级处理。"
+      : rec.state === "canceled" ? "已取消下载（临时文件已清理）。"
+      : `❌ 下载失败：${rec.error || "未知原因"}。大脑会按缺模型降级处理。`;
+    body.innerHTML += `<div class="mdl-warn">${escapeHtml(msg)}</div>`;
+    if (rec.state === "failed") showWarning(`模型下载失败：${rec.error || ""}`);
+  }
+  $("#modeldlmodal").classList.remove("hidden");
+}
+
+async function mdlDecide(action) {
+  if (!mdlRec) return;
+  try {
+    const r = await fetch("/api/model-download", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ download_id: mdlRec.id, action }),
+    });
+    const d = await r.json();
+    if (!d.ok) showWarning(d.error || "操作失败");
+    else if (d.download) showModelDownload(d.download);
+  } catch (e) {
+    showWarning("下载操作请求失败：" + (e && e.message ? e.message : e));
+  }
+}
+
+$("#mdl_ok").addEventListener("click", () => mdlDecide("confirm"));
+$("#mdl_no").addEventListener("click", () => mdlDecide("decline"));
+$("#mdl_cancel").addEventListener("click", () => mdlDecide("cancel"));
+$("#mdl_close").addEventListener("click", () => {
+  $("#modeldlmodal").classList.add("hidden");
+  mdlRec = null;
+});
+
+// 刷新/换项目后恢复未决的下载弹窗（服务器是唯一真相源）
+async function refreshModelDownloads() {
+  try {
+    const pid = activeProject ? activeProject.id : "";
+    const r = await fetch("/api/model-downloads?project=" + encodeURIComponent(pid));
+    const d = await r.json();
+    const pending = (d.downloads || []).filter((x) =>
+      x.state === "awaiting_confirm" || x.state === "downloading");
+    if (pending.length) showModelDownload(pending[0]);
+  } catch (e) { /* 后端未就绪 */ }
+}
+
 // ---------- 设置面板 ----------
 async function openSettings() {
   try {
@@ -831,4 +957,5 @@ $("#set_save").addEventListener("click", async () => {
   if (st.draft) renderGraph(st.draft);
   if (st.outputs) renderGallery(st.outputs);
   if (st.stage) setStage(st.stage);
+  refreshModelDownloads();
 })();

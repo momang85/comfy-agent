@@ -159,3 +159,14 @@ body {
 .modal-actions button { background: var(--panel2); color: var(--text);
   border: 1px solid #2c3548; border-radius: 6px; padding: 6px 14px; cursor: pointer; }
 .modal-actions button:hover { border-color: var(--accent); }
+
+/* 缺失模型下载弹窗 */
+#modeldlmodal .modal-box { width: 480px; }
+.mdl-row { display: flex; gap: 10px; font-size: 13px; margin: 6px 0; }
+.mdl-row .k { color: var(--dim); min-width: 78px; }
+.mdl-row .v { flex: 1; word-break: break-all; }
+.mdl-warn { color: #e0a800; font-size: 12px; margin-top: 8px; }
+.mdl-progress { margin-top: 12px; }
+.barwrap { height: 8px; background: var(--panel2); border: 1px solid #2c3548;
+  border-radius: 5px; overflow: hidden; }
+.bar { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
