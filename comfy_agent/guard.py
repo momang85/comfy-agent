@@ -5,7 +5,7 @@
 而运行期没有任何自动保护——只有 `scripts/run_complex_task.py`（测试脚本）里有熔断。
 本模块把温度读取与阈值判断做成运行时能力，由服务侧监控循环调用。
 
-阈值：环境变量 `GPU_TEMP_LIMIT`（默认 85°C）。设为 0 或负数可关闭熔断。
+阈值：`GPU_TEMP_WARN`（默认 88°C，只提醒）与 `GPU_TEMP_LIMIT`（默认 92°C，中断任务）。设为 0 或负数可关闭。
 """
 from __future__ import annotations
 

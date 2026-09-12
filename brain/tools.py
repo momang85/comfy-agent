@@ -224,6 +224,31 @@ def _engine_eval_reuse(ctx: ToolContext, paths: list) -> dict | None:
             "engine_eval": le}
 
 
+def tool_list_outputs(ctx: ToolContext, args: dict) -> dict:
+    """列出本项目最近的产物文件（重启/压缩上下文后不猜路径）。
+
+    args: {}（无参数）。实测大脑在丢失产物引用时会传占位符
+    （如 "您的视频文件路径"）——给一个按需查询的只读工具。"""
+    try:
+        root = ctx.project.outputs_dir() if ctx.project else None
+    except Exception:
+        root = None
+    if not root or not root.exists():
+        return {"ok": True, "count": 0, "files": [],
+                "note": "本项目暂无产物（先执行生成）"}
+    exts = (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm", ".mkv", ".mov")
+    files = [f for f in root.rglob("*")
+             if f.is_file() and f.suffix.lower() in exts]
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    return {"ok": True, "count": len(files),
+            "files": [{"name": f.name, "path": str(f),
+                       "kind": "video" if f.suffix.lower() in
+                       (".mp4", ".webm", ".mkv", ".mov") else "image",
+                       "mtime": int(f.stat().st_mtime)}
+                      for f in files[:10]],
+            "note": "可直接把这些文件名填入模板的 image/video 参数（引擎会自动上传）"}
+
+
 def tool_view_image(ctx: ToolContext, args: dict) -> dict:
     """视觉评估图片（分层：Tier0 免费 + 云端VLM 区域级诊断）。
     args: {paths: [...], use_last?: true, criteria: "要求描述", sample?: 3}
@@ -773,6 +798,9 @@ TOOLS: dict[str, dict] = {
     "list_templates": {"fn": tool_list_templates,
                        "desc": "列出可用模板（含参数）",
                        "args": {}},
+    "list_outputs": {"fn": tool_list_outputs,
+                     "desc": "列出本项目最近的产物文件（填进模板 image/video 参数用；重启后不要猜路径）",
+                     "args": {}},
     "render_workflow": {"fn": tool_render_workflow,
                          "desc": "渲染模板为工作流草稿并本地校验",
                          "args": {"template_id": "str", "params": "dict"}},

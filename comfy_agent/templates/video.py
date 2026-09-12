@@ -18,6 +18,9 @@ MM_VAE = "minimax_h3_video_vae_fp16.safetensors"
 
 LTX_CKPT = "ltx-2.3-22b-distilled-1.1.safetensors"
 LTX_LORA = "ltx-2.3-22b-distilled-lora-384-1.1.safetensors"
+# LTX-2.x 的文本编码器是独立的 Gemma-3 分片（checkpoint 不含可用 CLIP）
+LTX_GEMMA = ("gemma-3-12b-it-qat-q4_0-unquantized/"
+             "model-00001-of-00002.safetensors")
 
 
 def _to_frames(raw, fps: float = 24.0) -> tuple:
@@ -38,8 +41,10 @@ def _to_frames(raw, fps: float = 24.0) -> tuple:
 
 
 class _LengthUnitsMixin:
-    """视频 length 单位消歧（秒 vs 帧）。"""
+    """视频 length 单位消歧（秒 vs 帧）+ 训练区间上界护栏 + 帧数网格对齐。"""
     FPS = 24
+    TRAINED_MAX = None      # 模型训练帧数上界（超出的部分未训练，容易糊/崩）
+    GRID = None             # (步长, 偏移)：LTX 要求 8k+1 对齐，节点 step=8
 
     def normalize_params(self, p: dict) -> tuple[dict, list[str]]:
         out, notes = super().normalize_params(p)
@@ -49,7 +54,30 @@ class _LengthUnitsMixin:
                 notes.append(f"length={out['length']!r} 按秒理解"
                              f"（{self.FPS}fps）→ {frames} 帧")
                 out["length"] = frames
+            self._snap_grid(out, notes)
+        # 训练区间护栏：服务器 bounds 是 [5,3600]/[9,16384]，管不到训练区间，
+            # 实测 length=20 会被当 20 秒 → 480 帧（远超训练上界）却无人告警
+        cap = self.TRAINED_MAX
+        ln = out.get("length")
+        if cap and isinstance(ln, (int, float)) and ln > cap:
+            notes.append(f"length={ln} 超过 {self.family} 训练帧数上界 {cap}"
+                         f"（超出部分未训练，容易糊或崩），已收敛为 {cap}")
+            out["length"] = cap
         return out, notes
+
+    def _snap_grid(self, out: dict, notes: list) -> None:
+        """把帧数对齐到模型要求的网格（如 LTX 的 8k+1）。"""
+        grid = self.GRID
+        ln = out.get("length")
+        if not grid or not isinstance(ln, (int, float)):
+            return
+        step, offset = grid
+        k = max(0, round((ln - offset) / step))
+        snapped = k * step + offset
+        if snapped != ln:
+            notes.append(f"length={ln} 未对齐 {self.family} 的 {step}k+{offset} "
+                         f"帧数网格，已对齐为 {snapped}")
+            out["length"] = snapped
 
 
 class MiniMaxVideoBase(_LengthUnitsMixin, Template):
@@ -81,6 +109,7 @@ class MiniMaxVideoBase(_LengthUnitsMixin, Template):
         ]
 
     FPS = 24
+    TRAINED_MAX = 362        # H3 训练区间 124-362（object_info tooltip 原文）
 
     def render(self, p: dict):
         q = self._fill_defaults(p, self.params())
@@ -178,8 +207,10 @@ class LTXVideo(_LengthUnitsMixin, Template):
     name = "图生视频-LTX"
     category = "video"
     family = "ltx"
+    TRAINED_MAX = 257        # LTX 训练上界（帧数 8k+1 网格，257=8·32+1）
+    GRID = (8, 1)            # LTXVImgToVideo.length step=8，必须 8k+1
     desc = "LTX-2.3 图生视频（22B蒸馏版+384LoRA，本地Gemma文本编码器）。"
-    models_used = [LTX_CKPT, LTX_LORA]
+    models_used = [LTX_CKPT, LTX_LORA, LTX_GEMMA]
     est_vram_gb = 11.0
     est_minutes = "10-30"
 
@@ -188,6 +219,8 @@ class LTXVideo(_LengthUnitsMixin, Template):
             Param("image", "image", "", "首帧图片", required=True),
             Param("prompt", "str", "", "视频描述", required=True,
                   desc="自然语言/英文描述（Gemma 编码）"),
+            Param("negative", "str", "", "负面描述（可选）",
+                  desc="留空即无负面条件；不建议堆砌标签"),
             Param("width", "int", 768, "宽", minv=256, maxv=1280),
             Param("height", "int", 512, "高", minv=256, maxv=768),
             Param("length", "int", 121, "帧数", minv=9, maxv=257,
@@ -198,6 +231,8 @@ class LTXVideo(_LengthUnitsMixin, Template):
             Param("steps", "int", 10, "步数", minv=4, maxv=40),
             Param("cfg", "float", 3.0, "CFG", minv=1.0, maxv=10.0,
                   desc="蒸馏模型推荐 3.0 左右"),
+            Param("text_encoder", "str", LTX_GEMMA, "文本编码器（Gemma 分片）",
+                  desc="LTX-2.x 必须外挂 Gemma-3；引擎会自动归一为本机清单形态"),
             Param("seed", "int", 0, "种子(0=随机)"),
         ]
 
@@ -211,13 +246,31 @@ class LTXVideo(_LengthUnitsMixin, Template):
             "3": {"class_type": "LoraLoaderModelOnly", "inputs": {
                 "lora_name": LTX_LORA, "strength_model": 1.0,
                 "model": ["2", 0]}},
+            # 文本编码器必须外挂 Gemma-3（LTX checkpoint 不含可用 CLIP——
+            # 实测用 ckpt 槽 1 会报 "clip input is invalid: None"）
+            "0": {"class_type": "LTXAVTextEncoderLoader", "inputs": {
+                "text_encoder": q.get("text_encoder") or LTX_GEMMA,
+                "ckpt_name": LTX_CKPT, "device": "default"}},
             "4": {"class_type": "CLIPTextEncode", "inputs": {
-                "clip": ["2", 1], "text": q["prompt"]}},
+                "clip": ["0", 0], "text": q["prompt"]}},
+            "4b": {"class_type": "CLIPTextEncode", "inputs": {
+                "clip": ["0", 0], "text": q["negative"] or ""}},
+            "4c": {"class_type": "LTXVConditioning", "inputs": {
+                "positive": ["4", 0], "negative": ["4b", 0],
+                "frame_rate": float(self.FPS)}},
             "5": {"class_type": "LTXVImgToVideo", "inputs": {
-                "positive": ["4", 0], "negative": ["4", 0],
+                "positive": ["4c", 0], "negative": ["4c", 1],
                 "vae": ["2", 2], "width": q["width"], "height": q["height"],
                 "length": q["length"], "batch_size": 1, "strength": 1.0,
                 "image": ["1", 0]}},
+            # 音频分支（LTX-2 音画同生）：空音频潜空间 → 与视频潜空间拼接
+            "av": {"class_type": "LTXVAudioVAELoader",
+                   "inputs": {"ckpt_name": LTX_CKPT}},
+            "5b": {"class_type": "LTXVEmptyLatentAudio", "inputs": {
+                "frames_number": q["length"], "frame_rate": float(self.FPS),
+                "batch_size": 1, "audio_vae": ["av", 0]}},
+            "5c": {"class_type": "LTXVConcatAVLatent", "inputs": {
+                "video_latent": ["5", 2], "audio_latent": ["5b", 0]}},
             "6": {"class_type": "CFGGuider", "inputs": {
                 "model": ["3", 0], "positive": ["5", 0], "negative": ["5", 1],
                 "cfg": q["cfg"]}},
@@ -230,13 +283,17 @@ class LTXVideo(_LengthUnitsMixin, Template):
                 "noise_seed": seed}},
             "10": {"class_type": "SamplerCustomAdvanced", "inputs": {
                 "noise": ["9", 0], "guider": ["6", 0], "sampler": ["7", 0],
-                "sigmas": ["8", 0], "latent_image": ["5", 2]}},
-            "11": {"class_type": "VAEDecode", "inputs": {
-                "samples": ["10", 0], "vae": ["2", 2]}},
-            "12": {"class_type": "CreateVideo", "inputs": {
-                "images": ["11", 0], "fps": 24.0}},
-            "13": {"class_type": "SaveVideo", "inputs": {
-                "video": ["12", 0], "filename_prefix": "agent_ltx",
+                "sigmas": ["8", 0], "latent_image": ["5c", 0]}},
+            "11": {"class_type": "LTXVSeparateAVLatent", "inputs": {
+                "av_latent": ["10", 0]}},
+            "12": {"class_type": "VAEDecode", "inputs": {
+                "samples": ["11", 0], "vae": ["2", 2]}},
+            "12b": {"class_type": "LTXVAudioVAEDecode", "inputs": {
+                "samples": ["11", 1], "audio_vae": ["av", 0]}},
+            "13": {"class_type": "CreateVideo", "inputs": {
+                "images": ["12", 0], "audio": ["12b", 0], "fps": 24.0}},
+            "14": {"class_type": "SaveVideo", "inputs": {
+                "video": ["13", 0], "filename_prefix": "agent_ltx",
                 "format": "auto"}},
         }
 

@@ -90,6 +90,31 @@
   `CheckpointLoaderSimple(LTX_CKPT)` 的 **槽 1 取 CLIP**，而 LTX-2.x 的文本编码器是 text_encoders 里**独立的 Gemma-3 分片**——
   模板没有加载它。该链路很可能在服务器端直接失败（clip 类型/权重不匹配），需在 LLM 可用时实测定性
 
+### LTX 修复与实测（第二轮追加：设计风险已定性与修复）
+
+**修复前实测（实证定性）**：`ltx_i2v` 提交后 `execution_failed`，节点 4 报
+`ERROR: clip input is invalid: None — If the clip is from a checkpoint loader node your checkpoint does not contain a valid clip or text encoder model`
+→ 证实"用 LTX checkpoint 槽 1 当 CLIP"是**真 bug**（不是猜测）。
+
+**修复内容**（`comfy_agent/templates/video.py`，签名均按本机 object_info 核对）：
+1. 文本编码改走专用加载器：`LTXAVTextEncoderLoader(text_encoder=<Gemma 分片>, ckpt_name=LTX_CKPT)` → 正/负两个 `CLIPTextEncode` → `LTXVConditioning(frame_rate=24)` → `LTXVImgToVideo`（修掉了"正负接同一路"的退化 CFG）
+2. **音频链**：`LTXVAudioVAELoader` + `LTXVEmptyLatentAudio` + `LTXVConcatAVLatent` → 采样 → `LTXVSeparateAVLatent` → `VAEDecode`(视频)/`LTXVAudioVAEDecode`(音频) → `CreateVideo(images, audio, fps)` → `SaveVideo`
+3. 帧数 **8k+1 对齐**（`_LengthUnitsMixin.GRID=(8,1)`）：`duration=4`→96 帧会被对齐为 97（96 对 `LTXVImgToVideo` 是非法值）
+4. `models_used` 补 Gemma 分片；新增 `text_encoder` 参数；引擎新增**通用模型参数归一** `_canonical_model_params`（把 `text_encoder` 等非 ckpt 的模型名归一为清单形态——Gemma 名在 Windows 清单里是反斜杠）
+
+**修复后实测**：
+- ✅ 校验通过（原来的 `clip input is invalid` 消失）；`Value not in list` 也消失（归一生效）
+- ❌ 执行期新报 **`invalid tokenizer`**：已核实该 Gemma 目录**tokenizer 文件齐全**（`tokenizer.json/.model/tokenizer_config.json/special_tokens_map.json`）→ 说明本机这版 `LTXAVTextEncoderLoader` **不认分片式 Gemma 目录**（官方 LTX-2.3 工作流用的是单文件 Gemma）
+- 另注：该 LTX checkpoint 达 **43GB**（22B bf16）+ Gemma 7.4GB，本机 12GB 显存 / 32GB 内存，即使装上单文件 Gemma 也是"能跑但极慢"的量级
+
+**结论（定性）**：LTX 链路的**代码缺陷已修**（接线正确、校验通过、音频链与网格对齐就位）；
+剩余阻塞是**模型格式/加载器兼容**问题，需要装 LTX 推荐的单文件 Gemma 文本编码器——
+这正是本轮新增"缺模型搜索下载"功能的用武之地。
+
+附带修掉一个报告类 bug：`run_workflow` 在 `execution_failed` 时只改 `stage` 不回写 `ok`，
+导致失败结果 `ok: True`（调用方会把失败当成功）——已在两处失败分支显式置 `ok: False`。
+
+
 ### 本轮补跑的另外两点观察
 
 - 自动上传（P0-4）在每一步都生效：`image/video/video1/video2 已自动上传到 ComfyUI /input`

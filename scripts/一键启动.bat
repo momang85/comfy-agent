@@ -20,7 +20,10 @@ REM ============================================================
 REM Portable paths: project root = parent of this script's folder (normalized);
 REM ComfyUI from env COMFY_ROOT -> comfy_root.local -> common locations
 set "PROJ=%~dp0.."
-pushd "%PROJ%" && set "PROJ=%CD%" && popd
+REM 规范化路径：必须分两行（同一行里 %CD% 会在解析期展开，导致取到旧目录）
+pushd "%~dp0.."
+set "PROJ=%CD%"
+popd
 if "%COMFY_ROOT%"=="" if exist "%PROJ%\comfy_root.local" set /p COMFY_ROOT=<"%PROJ%\comfy_root.local"
 REM 回落探测：环境变量与 comfy_root.local 都没有时，试常见安装位置
 if "%COMFY_ROOT%"=="" call :probe_comfy

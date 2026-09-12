@@ -48,6 +48,17 @@ def run_workflow(workflow_api: dict, *, source: str = "workflow",
      server_errors, exec_error, suggestion, outputs, output_dir}"""
     client = client or Client()
     knowledge = knowledge or Knowledge.build()
+    # 可选自愈：ComfyUI 不可达且 AUTO_START_COMFY=1 时尽力拉起（默认关闭）
+    alive = getattr(client, "is_alive", None)
+    if callable(alive):
+        try:
+            if not alive():
+                from .guard import try_start_comfy
+                if try_start_comfy():
+                    _emit_stage("warning", {
+                        "warning": "ComfyUI 不在运行，已按 AUTO_START_COMFY=1 自动拉起"})
+        except Exception:
+            pass
     wf = {k: dict(v) for k, v in workflow_api.items()}
     result = {"ok": False, "source": source, "stage": "validate",
               "repairs": [], "outputs": []}
@@ -122,6 +133,8 @@ def run_workflow(workflow_api: dict, *, source: str = "workflow",
     _emit_stage("running", {"prompt_id": prompt_id, "source": source})
     if not wait:
         return result
+    # 从这里往下的任何失败都必须把 ok 改回 False：stage3 已把 ok 置 True，
+    # 只改 stage 会让调用方（大脑/前端/CLI）把失败当成功（实测踩过）
 
     # ---- stage4: 执行（OOM/形状→一次自动重试） ----
     entry = client.wait_for_result(prompt_id, timeout=timeout)
@@ -137,13 +150,13 @@ def run_workflow(workflow_api: dict, *, source: str = "workflow",
             result["prompt_id"] = r2["prompt_id"]
             if exec_err:
                 _emit_stage("execution_failed", {"exec_error": str(exec_err)[:200]})
-                result.update({"stage": "execution_failed",
+                result.update({"stage": "execution_failed", "ok": False,
                                "exec_error": exec_err,
                                "suggestion": suggestion,
                                "hint": friendly_error_zh(exec_err)})
                 return result
         else:
-            result.update({"stage": "execution_failed",
+            result.update({"stage": "execution_failed", "ok": False,
                            "exec_error": exec_err,
                            "suggestion": suggestion,
                            "hint": friendly_error_zh(exec_err)})
@@ -266,6 +279,8 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     params, adapt_notes = adapt_ckpt(tpl, params, knowledge)
     params, guard_notes = _guard_params(tpl, params)
     params, prompt_notes = _apply_prompt_spec(tpl, params)
+    # 模型名参数归一（除 ckpt 外，如 LTX 的 text_encoder=Gemma 分片）
+    params, model_notes = _canonical_model_params(tpl, params, knowledge)
     # 输入文件由引擎代传到 ComfyUI /input（大脑常漏这一步，见 problems-detailed P0-4）
     params, upload_notes, upload_err = _ensure_inputs_uploaded(
         tpl, params, kw.get("client"), kw.get("output_root"))
@@ -282,7 +297,7 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
                if not knowledge.find_model(m, folders=_folders_for(m))
                and not (ckpt_ok and m == ckpt_default)]
     all_notes = list(unit_notes) + list(adapt_notes) + list(guard_notes) \
-        + list(prompt_notes) + list(upload_notes)
+        + list(prompt_notes) + list(upload_notes) + list(model_notes)
     if missing:
         _emit_stage("validation_failed",
                     {"error": f"缺少模型: {missing}"})
@@ -318,6 +333,28 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     if warnings:
         result.setdefault("warnings", []).extend(warnings)
     return result
+
+
+def _canonical_model_params(tpl, params: dict, knowledge) -> tuple[dict, list[str]]:
+    """把模板参数里的模型文件名归一为本机清单形态（分隔符/子目录差异）。
+
+    与 adapt_ckpt 同理：本地校验对分隔符不敏感，但服务器按精确串校验
+    （如 text_encoder='gemma-3-.../model-00001-...' 在 Windows 清单里是反斜杠）。"""
+    notes: list[str] = []
+    suffixes = (".safetensors", ".ckpt", ".pt", ".gguf", ".pth")
+    for prm in tpl.params():
+        if prm.name == "ckpt":
+            continue                    # adapt_ckpt 已处理 checkpoint
+        if not str(prm.default or "").lower().endswith(suffixes):
+            continue
+        val = params.get(prm.name) or prm.default
+        if not val:
+            continue
+        canon = knowledge.resolve_model_name(str(val))
+        if canon and canon != val:
+            params[prm.name] = canon
+            notes.append(f"{prm.name} 已归一为本机清单形态：{val!r} → {canon!r}")
+    return params, notes
 
 
 def _ensure_inputs_uploaded(tpl, params: dict, client, output_root=None):

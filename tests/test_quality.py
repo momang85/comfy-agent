@@ -65,8 +65,21 @@ class TestVideoLengthUnits(unittest.TestCase):
     def test_ltx_also_normalizes(self):
         from comfy_agent.templates.video import LTXVideo
         out, notes = LTXVideo().normalize_params({"prompt": "x", "duration": 4})
-        self.assertEqual(out["length"], 96)
+        # 4 秒 → 96 帧，但 LTXVImgToVideo 要求 8k+1（step=8）→ 对齐为 97
+        self.assertEqual(out["length"], 97)
         self.assertTrue(notes)
+
+    def test_ltx_grid_alignment(self):
+        from comfy_agent.templates.video import LTXVideo
+        out, notes = LTXVideo().normalize_params({"prompt": "x", "duration": 5})
+        self.assertEqual(out["length"], 121)          # 120 → 8k+1 对齐
+        self.assertTrue(any("网格" in n for n in notes), notes)
+
+    def test_minimax_not_grid_snapped(self):
+        """MiniMax 没有 8k+1 约束，不得被网格改动（只做秒→帧）。"""
+        from comfy_agent.templates.video import MiniMaxT2V
+        out, _ = MiniMaxT2V().normalize_params({"prompt": "x", "duration": 5})
+        self.assertEqual(out["length"], 120)
 
 
 class TestParamGuard(unittest.TestCase):
@@ -487,6 +500,78 @@ class TestChoiceSnapAndEvalReuse(unittest.TestCase):
             vids = _latest_project_outputs(ctx, (".mp4",))
         self.assertEqual(len(vids), 1)
         self.assertTrue(vids[0].endswith("a.mp4"))
+
+
+class TestLengthTrainedCap(unittest.TestCase):
+    """length 超过模型训练帧数上界时收敛（服务器 bounds 管不到，实测踩过）。"""
+
+    def test_minimax_capped_at_362(self):
+        from comfy_agent.templates.video import MiniMaxT2V
+        out, notes = MiniMaxT2V().normalize_params(
+            {"prompt": "x", "duration": 20})          # 20 秒 → 480 帧
+        self.assertEqual(out["length"], 362)
+        self.assertTrue(any("训练帧数上界" in n for n in notes), notes)
+
+    def test_ltx_capped_at_257(self):
+        from comfy_agent.templates.video import LTXVideo
+        out, notes = LTXVideo().normalize_params({"prompt": "x", "length": 400})
+        self.assertEqual(out["length"], 257)
+        self.assertTrue(any("训练帧数上界" in n for n in notes), notes)
+
+    def test_within_range_untouched(self):
+        from comfy_agent.templates.video import MiniMaxT2V
+        out, notes = MiniMaxT2V().normalize_params({"prompt": "x", "length": 124})
+        self.assertEqual(out["length"], 124)
+        self.assertFalse(any("上界" in n for n in notes), notes)
+
+
+class TestListOutputsTool(unittest.TestCase):
+    """list_outputs：重启后按需查询项目产物，不再猜路径。"""
+
+    def test_lists_recent_files(self):
+        import tempfile
+        from pathlib import Path as P
+        from brain.tools import ToolContext, execute_tool
+
+        class Proj:
+            def __init__(self, d):
+                self._d = P(d)
+
+            def outputs_dir(self):
+                return self._d
+
+        with tempfile.TemporaryDirectory() as d:
+            (P(d) / "a.mp4").write_bytes(b"1")
+            (P(d) / "b.png").write_bytes(b"2")
+            ctx = ToolContext()
+            ctx.project = Proj(d)
+            r = execute_tool(ctx, "list_outputs", {})
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["count"], 2)
+        self.assertEqual({f["name"] for f in r["files"]}, {"a.mp4", "b.png"})
+
+    def test_empty_project_is_ok(self):
+        import tempfile
+        from pathlib import Path as P
+        from brain.tools import ToolContext, execute_tool
+
+        class Proj:
+            def __init__(self, d):
+                self._d = P(d)
+
+            def outputs_dir(self):
+                return self._d
+
+        with tempfile.TemporaryDirectory() as d:
+            ctx = ToolContext()
+            ctx.project = Proj(d)
+            r = execute_tool(ctx, "list_outputs", {})
+        self.assertTrue(r["ok"])          # 空项目不算错误
+        self.assertEqual(r["count"], 0)
+
+    def test_tool_registered_for_llm(self):
+        from brain.tools import tools_schema_for_llm
+        self.assertIn("list_outputs", tools_schema_for_llm())
 
 
 if __name__ == "__main__":
