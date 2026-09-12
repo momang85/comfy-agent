@@ -22,6 +22,9 @@ class EvalResult:
         self.tier0: list[dict] = []     # 确定性检查结果
         self.vlm: list[dict] = []       # VLM 评估结果
         self.retry_advice: str = ""     # 给重试循环的建议（Tier0 不达标时）
+        # 视觉不可用时如实记录：曾经只写 pass=None（ok 属性不算失败），
+        # 表现成"评估一切正常"，而实际语义检查全部被跳过
+        self.vlm_error: str = ""
 
     @property
     def ok(self) -> bool:
@@ -32,7 +35,34 @@ class EvalResult:
 
     def to_dict(self):
         return {"tier0": self.tier0, "vlm": self.vlm,
-                "ok": self.ok, "advice": self.retry_advice}
+                "ok": self.ok, "advice": self.retry_advice,
+                "vlm_error": self.vlm_error}
+
+
+# 视觉不可用只提醒一次（按 地址|模型|错误摘要 去重，避免每张图刷屏）
+_VISION_WARNED: set = set()
+
+
+def _warn_vision_unavailable(err: str) -> None:
+    """把"视觉不可用"推成一条 warning：评估静默跳过比失败更危险。"""
+    try:
+        from ..llm import VLMClient
+        eff = VLMClient().effective()
+    except Exception:
+        eff = {}
+    key = f"{eff.get('base_url')}|{eff.get('model')}|{err[:60]}"
+    if key in _VISION_WARNED:
+        return
+    _VISION_WARNED.add(key)
+    msg = (f"视觉评估不可用（{eff.get('model') or '?'} @ "
+           f"{eff.get('base_url') or '?'}）：{err[:160]}。"
+           "图像/视频评估的语义检查已跳过，只有几何检查在生效；"
+           "请在 ⚙ 设置里填一个可用的视觉模型（地址/Key 默认跟随大脑）。")
+    try:
+        from ..events import emit
+        emit("stage", {"stage": "warning", "detail": {"warning": msg}})
+    except Exception:
+        pass
 
 
 # ---------------- Tier 0: 确定性检查（免费，纯标准库） ----------------
@@ -123,8 +153,10 @@ def evaluate(image_paths: list[str], criteria: str = "",
         from ..llm import VLMClient
         vlm = VLMClient()
         if not vlm.ready:
+            result.vlm_error = "未配置视觉 API Key"
             result.vlm.append({"pass": None,
                                "note": "VLM_API_KEY 未配置，跳过语义评估"})
+            _warn_vision_unavailable(result.vlm_error)
             return result
         for ip in to_check:
             r = vlm.judge_json(ip, criteria or "图像质量良好，无明显畸形")
@@ -136,7 +168,9 @@ def evaluate(image_paths: list[str], criteria: str = "",
                                for s in r["issues"]]
             result.vlm.append(r)
     except Exception as e:
-        result.vlm.append({"pass": None, "error": str(e)[:200]})
+        result.vlm_error = str(e)[:200]
+        result.vlm.append({"pass": None, "error": result.vlm_error})
+        _warn_vision_unavailable(result.vlm_error)
     return result
 
 
@@ -169,8 +203,10 @@ def evaluate_video(video_path: str, criteria: str = "",
         from ..llm import VLMClient
         vlm = VLMClient()
         if not vlm.ready:
+            result.vlm_error = "未配置视觉 API Key"
             result.vlm.append({"pass": None,
                                "note": "VLM_API_KEY 未配置，跳过语义评估"})
+            _warn_vision_unavailable(result.vlm_error)
             return result
         for i, fp in enumerate(frame_paths):
             result.tier0.append(tier0_check(fp))
@@ -188,5 +224,7 @@ def evaluate_video(video_path: str, criteria: str = "",
                     f"{'; '.join(i.get('description', '') for i in v.get('issues', []))[:120]}"
                     for v in fails))
     except Exception as e:
-        result.vlm.append({"pass": None, "error": str(e)[:200]})
+        result.vlm_error = str(e)[:200]
+        result.vlm.append({"pass": None, "error": result.vlm_error})
+        _warn_vision_unavailable(result.vlm_error)
     return result

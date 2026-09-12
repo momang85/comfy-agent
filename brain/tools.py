@@ -42,6 +42,9 @@ class ToolContext:
         self.history_entry: dict | None = None
         # 本轮任务轨迹（失败→修复→成功，供技能沉淀）
         self.trajectory: list[dict] = []
+        # 本轮用户新上传的图（Brain.handle 写入）：分析/执行默认用它，
+        # 避免"大脑拿项目历史产物当刚上传的图"（见 docs 的 D 系列缺陷）
+        self.current_upload: dict | None = None
         # 合成会话（图合成引擎）
         self.synth = None
 
@@ -344,52 +347,76 @@ def tool_edit_workflow(ctx: ToolContext, args: dict) -> dict:
             "validation_issues": [i.to_dict() for i in issues][:8]}
 
 
-def _resolve_upload(ctx: ToolContext, raw: str) -> Path:
-    """图片路径解析：精确不存在时在本项目 uploads/ 内按相似度纠错。
+def _upload_candidates(ctx: ToolContext) -> list[Path]:
+    """本项目已上传的图片（新→旧）。"""
+    try:
+        files = [f for f in ctx.project.uploads_dir().glob("*") if f.is_file()]
+    except Exception:
+        return []
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    return files
 
-    轻量模型常把上传文件名抄错一两个字符（实测丢字符导致"图片不存在"），
-    相似度足够高时自动纠正，避免整轮任务因路径笔误中断。"""
+
+def _resolve_upload(ctx: ToolContext, raw: str) -> Path | None:
+    """图片路径解析：**只认精确匹配**，不做相似度替换。
+
+    曾按 0.75 相似度自动纠错，结果是"抄错一个字符"被静默换成**另一张更早的
+    上传图**——用户看着自己的新图被改成了旧图。现在解析不到就返回 None，
+    由调用方报错并列出真实候选，让大脑自己改对。
+    """
+    if not raw:
+        return None
     p = Path(raw)
     if p.exists():
         return p
-    try:
-        from difflib import SequenceMatcher
-        base = p.name.lower()
-        best, score = None, 0.0
-        for f in ctx.project.uploads_dir().glob("*"):
-            if not f.is_file():
-                continue
-            s = SequenceMatcher(None, base, f.name.lower()).ratio()
-            if s > score:
-                best, score = f, s
-        if best is not None and score >= 0.75:
-            return best
-    except Exception:
-        pass
-    return p
+    name = p.name
+    for f in _upload_candidates(ctx):
+        if f.name == name:
+            return f
+    return None
 
 
 def tool_analyze_image(ctx: ToolContext, args: dict) -> dict:
     """分析用户图片（先看再干）：内容/风格/配色/构图+推荐模板与提示词。
-    args: {path: 本地图片路径}"""
+    args: {path?: 本地图片路径；不传则分析**本轮用户新上传的那张**}"""
     from .llm import VLMClient, LLMError
-    raw = str(args.get("path", ""))
-    p = _resolve_upload(ctx, raw)
-    if not p.exists():
-        return {"ok": False, "error": f"图片不存在: {raw}"}
+    raw = str(args.get("path") or "").strip()
+    cur = (ctx.current_upload or {}).get("local_path")
+    if not raw and cur:
+        p = Path(cur)
+        source = "本轮上传"
+    else:
+        p = _resolve_upload(ctx, raw)
+        source = "指定路径"
+    if p is None or not Path(p).exists():
+        cands = [f.name for f in _upload_candidates(ctx)][:8]
+        hint = (f"本项目已上传：{cands}" if cands
+                else "本项目还没有上传记录")
+        return {"ok": False, "error": f"图片不存在: {raw or cur or '(未提供)'}。{hint}",
+                "hint": ("不要改用别的图片。若用户本轮刚上传了图，"
+                         "不传 path 直接调用本工具即分析那张；"
+                         "若路径抄错，请照上面的真实文件名重试一次")}
     try:
         vlm = VLMClient()
         if not vlm.ready:
-            return {"ok": False, "error": "VLM 未配置，无法看图"}
+            return {"ok": False, "error": "VLM 未配置，无法看图",
+                    "hint": ("如实告诉用户你看不到这张图（视觉模型未配置），"
+                             "请其用文字描述或配置 ⚙ 里的视觉模型；"
+                             "禁止编造图片内容或改用其它图片")}
         analysis = vlm.analyze_image_json(p)
-        return {"ok": True, "path": str(p), **analysis}
+        return {"ok": True, "path": str(p), "source": source, **analysis}
     except LLMError as e:
         msg = str(e)
         if "contentFilter" in msg or "1301" in msg:
             return {"ok": False,
                     "error": "图片被服务商内容安全策略拦截，视觉模型无法分析。"
-                             "可改用文字描述画面内容，或更换图片后重试。"}
-        return {"ok": False, "error": msg[:200]}
+                             "可改用文字描述画面内容，或更换图片后重试。",
+                    "hint": ("如实告诉用户这张图被内容安全策略拦截、你看不到；"
+                             "不要编造画面内容，也不要拿别的图顶替")}
+        return {"ok": False, "error": msg[:200],
+                "hint": ("如实告诉用户看图失败（附上错误原因），"
+                         "请其用文字描述或改配置；禁止编造图片内容、"
+                         "禁止改用项目里的其它图片")}
 
 
 def tool_run_template(ctx: ToolContext, args: dict) -> dict:
@@ -408,7 +435,8 @@ def tool_run_template(ctx: ToolContext, args: dict) -> dict:
     result = run_template(tid, params, client=ctx.client,
                           knowledge=ctx.knowledge,
                           output_root=ctx.project.outputs_dir()
-                          if ctx.project else None)
+                          if ctx.project else None,
+                          current_upload=ctx.current_upload)
     if result.get("ok"):
         ctx.prompt_id = result.get("prompt_id")
         ctx.draft_meta["last_outputs"] = [

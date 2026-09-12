@@ -227,7 +227,8 @@ def _force_image_evaluation(result: dict, outs: list) -> None:
                      if isinstance(x, dict))[:120]}
                 for i in d.get("vlm", []) or []
                 if i.get("pass") is False][:4],
-            "files": images})
+            "files": images,
+            "vlm_error": d.get("vlm_error") or ""})
     except Exception as e:
         result["evaluation"] = {"error": str(e)[:200]}
 
@@ -263,13 +264,16 @@ def _force_video_evaluation(result: dict, outs: list) -> None:
                                      if isinstance(x, dict))[:120]}
                                 for i in d.get("vlm", []) or []
                                 if i.get("pass") is False][:4],
-                            "files": videos})
+                            "files": videos,
+                            "vlm_error": d.get("vlm_error") or ""})
     except Exception as e:
         result["evaluation"] = {"error": str(e)[:200]}
 
 
 def run_template(template_id: str, params: dict, **kw) -> dict:
     """模板路径的薄封装：渲染 → run_workflow。"""
+    # current_upload 只给 _ensure_inputs_uploaded 用，不能透传给 run_workflow
+    current_upload = kw.pop("current_upload", None)
     tpl = get_template(template_id)
     if tpl is None:
         _emit_stage("validation_failed",
@@ -292,7 +296,8 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     params, model_notes = _canonical_model_params(tpl, params, knowledge)
     # 输入文件由引擎代传到 ComfyUI /input（大脑常漏这一步，见 problems-detailed P0-4）
     params, upload_notes, upload_err = _ensure_inputs_uploaded(
-        tpl, params, kw.get("client"), kw.get("output_root"))
+        tpl, params, kw.get("client"), kw.get("output_root"),
+        current_upload=current_upload)
     if upload_err:
         _emit_stage("validation_failed", {"error": upload_err})
         return {"ok": False, "stage": "render_failed", "error": upload_err}
@@ -374,31 +379,49 @@ def _canonical_model_params(tpl, params: dict, knowledge) -> tuple[dict, list[st
     return params, notes
 
 
-def _ensure_inputs_uploaded(tpl, params: dict, client, output_root=None):
+def _ensure_inputs_uploaded(tpl, params: dict, client, output_root=None,
+                            current_upload: dict = None):
     """模板声明的输入文件自动上传到 ComfyUI /input。
 
-    两种情况都覆盖：
-    1. 值是本机存在的文件路径 → 直接上传
-    2. 值是"裸文件名"（大脑预判的 server 名，实际还没上传）→ 在本项目
-       产物目录里找同名文件补传（实测大脑会先写 `agent_t2i_xxx.png`
-       再补 upload，第一次必然被服务器 value_not_in_list 拒绝）
+    覆盖情况：
+    1. 图片参数**空着**且本轮有用户上传 → 自动填这张（防"改图任务漏了 image"）
+    2. 值是本机存在的文件路径 → 直接上传
+    3. 值是裸文件名 → 先按**精确文件名**在项目 uploads/ 里找，再找产物目录
+       （此前只找产物目录：大脑抄了上传图的名字却被旧产物命中，用户看着
+       自己的新图被旧图顶替）
     返回值：(params, notes, error)。error 非空时调用方直接报错返回。"""
     decls = getattr(tpl, "input_files", None) or []
     notes: list[str] = []
     if not decls:
         return params, notes, None
+    up = current_upload or {}
+    up_local = str(up.get("local_path") or "")
+    up_server = str(up.get("server_name") or "")
     for pname, _kind in decls:
         val = params.get(pname)
+        auto = False
+        if (not isinstance(val, str) or not val.strip()) and up_local:
+            # 空着就填本轮上传的本地路径，交给下面的上传逻辑（顺带验证文件在，
+            # 不依赖"上传时已进 /input"这个前提，ComfyUI 重启后仍可用）
+            val = up_local
+            auto = True
         if not isinstance(val, str) or not val.strip():
             continue
         p = Path(val)
-        if not p.is_file() and output_root:
-            # 裸文件名兜底：在本项目产物目录里按文件名找
-            try:
-                cand = next((f for f in Path(output_root).rglob(p.name)
-                             if f.is_file()), None)
-            except Exception:
-                cand = None
+        if not p.is_file() and up_local and p.name == Path(up_local).name:
+            p = Path(up_local)          # 大脑写的正是本轮上传的文件名
+        if not p.is_file():
+            # 精确文件名兜底：uploads/ 优先，再产物目录
+            cand = None
+            for root in (Path(output_root).parent / "uploads"
+                         if output_root else None, output_root):
+                if cand is not None or root is None:
+                    continue
+                try:
+                    cand = next((f for f in root.rglob(p.name)
+                                 if f.is_file()), None)
+                except Exception:
+                    cand = None
             if cand:
                 p = cand
         if not p.is_file():
@@ -410,6 +433,9 @@ def _ensure_inputs_uploaded(tpl, params: dict, client, output_root=None):
             return params, notes, (f"{pname} 上传到 ComfyUI /input 失败：{e}。"
                                    "请确认 ComfyUI 正在运行")
         params[pname] = server_name
+        if auto:
+            notes.append(f"{pname} 未指定，已自动使用本轮用户上传的图："
+                         f"{p.name}")
         notes.append(f"{pname} 已自动上传到 ComfyUI /input："
                      f"{p.name} → {server_name}")
     return params, notes, None

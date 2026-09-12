@@ -1,7 +1,7 @@
 # 缺陷台账审计（逐条对照代码 · 2026-09-11）
 
 方法：不采信文档自述，逐项在**当前代码**里核对修复是否真的存在。证据列为 file:line。
-单测：`python -B -m unittest discover -s tests` → **148 tests OK**（2026-09-12 追加缺模型下载后为 **181 tests OK**）。
+单测：`python -B -m unittest discover -s tests` → **148 tests OK**（2026-09-12 追加缺模型下载后为 **181 tests OK**，追加视觉通道/上传绑定后为 **201 tests OK**）。
 
 ## 一、状态总表
 
@@ -58,3 +58,16 @@
 | D3 | 下载校验以"登记大小"判偏小 → 大脑估错时误杀正确文件 | 基准取错 | `_run` 改用本次传输的 `Content-Length`（权威） | ✅ FIXED |
 | D4 | 候选文件名匹配过宽：`definitely-not-a-real-model-xyz.safetensors` 命中 `model.safetensors` | `_score_filename` 双向子串判据 | 改为同名/前缀/公共前缀占比 | ✅ FIXED |
 | D5 | 单测真出网 + `HTTPError` 未关闭（ResourceWarning 401） | 测试未隔离网络；异常分支未 `close()` | 测试注入假 resolver/`_head_size`/`_open_stream`；`_head_size` 的 `HTTPError` 分支 `e.close()` | ✅ FIXED |
+
+## 五、2026-09-12 追加：视觉通道 + 上传绑定（详见 `docs/vision-channel-and-upload-binding-2026-09-12.md`）
+
+| ID | 问题 | 根因 | 修复点 | 状态 |
+|---|---|---|---|---|
+| D6 | **视觉请求发往旧 provider**：用户改 API 地址后看图必 400 | `config.py:58` `VLM_BASE_URL` 是导入期常量快照；设置面板只写 `llm_base_url` | `VLMClient` 解析改为 `env → settings.vlm_* → settings.llm_* → cfg`；面板预填生效值 + 显示"跟随大脑/自检" | ✅ FIXED |
+| D7 | 面板「视觉模型」永远空白 + 硬编码占位符；`get_settings()` 不返回视觉生效值 | `app.js openSettings()` 清空该字段；服务端只返回 `LLMClient().masked()` | 预填 `vision.model`；`get_settings()` 增 `vision`/`vision_state` | ✅ FIXED |
+| D8 | 视觉不可用**无任何用户可见信号** | 无自检；`VLMClient` 也未暴露生效配置 | `VLMClient.effective()/probe()` + `vision_selfcheck()`（启动与保存后各一次，失败推 warning，瞬时只标"未确定"） | ✅ FIXED |
+| D9 | 大脑拿项目历史产物顶替本轮上传的图 | 无 `current_upload` 状态；每回合注入最近产物（全是旧图）；历史注记长期存活 | `ToolContext.current_upload` + `analyze_image` 默认用它 + 引擎空参数自动填 + 产物列表降级标注 | ✅ FIXED |
+| D10 | `_resolve_upload` 按 0.75 相似度**静默替换**成另一张上传图 | 相似度纠错（本意是修笔误） | 改为只认精确匹配；找不到则报错并列出真实候选 | ✅ FIXED |
+| D11 | 看图失败后大脑编造画面内容（"根据历史记录这张图与之前相同"） | 提示词只有"先分析"的前置要求，缺失败分支的诚实性规则 | 新增规则 14 + 上传注记强约束 + 任务映射补充 | ✅ FIXED |
+| D12 | 视觉失败时评估静默跳过，还显示"评估通过" | `except` 吞掉 → `pass=None`，`EvalResult.ok` 不计失败 | `EvalResult.vlm_error` + 去重告警 + 评估卡显示"语义评估已跳过" | ✅ FIXED |
+| D13 | 自查回归：`current_upload` 透传给 `run_workflow` → TypeError | 新参数未在 `run_template` 入口取出 | `kw.pop("current_upload")`（真机第一轮即暴露） | ✅ FIXED |

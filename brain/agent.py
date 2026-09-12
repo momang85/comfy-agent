@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+import time
 
 from .llm import LLMClient, LLMError
 from .tools import ToolContext, execute_tool, tools_schema_for_llm
@@ -55,17 +56,36 @@ class Brain:
         memory = self.skills.format_for_llm(user_message)
         self.history.append({"role": "user", "content": user_message})
         if image:
+            # 绑定为"本轮上传"：analyze_image / 图片参数默认用它，防止大脑拿
+            # 项目历史产物顶替刚上传的图（实测发生过：看图 400 后它宣称
+            # "根据历史记录这张图与之前那张相同"，用旧图跑了 t2i）
+            self.ctx.current_upload = {
+                "local_path": image.get("local_path", ""),
+                "server_name": image.get("server_name", ""),
+                "name": image.get("name", ""),
+                "url": image.get("url", ""),
+                "ts": time.time(),
+            }
             note = "" if user_message.strip() else \
                 "用户只上传了图片、未附文字说明——先 analyze_image 描述图片内容，" \
                 "再向用户询问想怎么改。\n"
             self.history.append({"role": "user", "content":
-                "[系统] 用户上传了一张图片：\n" + note +
-                f"- 本地路径（analyze_image 用）：{image.get('local_path', '')}\n"
-                f"- ComfyUI /input 文件名（模板 image 参数直接填这个）："
-                f"{image.get('server_name', '')}\n"
-                "改图时先调用 analyze_image(本地路径) 看懂图片内容/风格/构图，"
-                "再选 i2i（保持构图改内容/风格）或 style_transfer（锁姿势线条换画风），"
-                "模板的 image 参数填 server_name，不要重新上传。"})
+                "[系统] 用户本轮新上传了一张图片"
+                "（这就是「这张图」，改图只能用这一张）：\n" + note +
+                f"- 本地路径：{image.get('local_path', '')}\n"
+                f"- ComfyUI /input 文件名：{image.get('server_name', '')}\n"
+                "规则：\n"
+                "1) analyze_image 不传 path 就是分析这张（不要自己编路径）；\n"
+                "2) 改图/参考图任务只能用这张，**不得**用「最近产物」里的"
+                "历史图片代替，也不要用历史对话里的其它图片；\n"
+                f"3) 模板的 image 参数填 server_name（{image.get('server_name', '')}），"
+                "不要重新上传。\n"
+                "先 analyze_image 看懂内容/风格/构图，再选 i2i（保持构图改内容/风格）"
+                "或 style_transfer（锁姿势线条换画风）。\n"
+                "若 analyze_image 失败（HTTP 错误/未配置视觉/被拦截）："
+                "如实告诉用户你看不到这张图并给出原因，请其用文字描述画面或"
+                "到 ⚙ 配置视觉模型；**禁止编造图片内容，禁止改用别的图片**；"
+                "改图类请求到此停下，只有纯文字描述生图（t2i）才可继续。"})
         if memory:
             if self.verbose:
                 self._log(f"[记忆] 召回 {memory.count('任务「')} 条相似任务经验")
@@ -247,8 +267,9 @@ class Brain:
             capability_blob = capability_summary(self.ctx.knowledge)
         except Exception:
             capability_blob = ""
-        # 本项目最近产物：Web UI/进程重启后大脑不会丢"上一轮生成过什么"，
-        # 可直接把这些文件名填进模板的 image/video 参数（引擎会自动补传 /input）
+        # 本项目历史产物：让大脑知道"上一轮生成过什么"（链式任务用）。
+        # 措辞刻意压低优先级：曾因这份列表里全是现成路径，大脑在看图失败后
+        # 拿历史产物顶替用户刚上传的图（"根据历史记录这张图与之前相同"）。
         recent_blob = ""
         try:
             proj = getattr(self.ctx, "project", None)
@@ -261,8 +282,10 @@ class Brain:
                 items.sort(key=lambda f: f.stat().st_mtime, reverse=True)
                 if items:
                     names = [f.name for f in items[:6]]
-                    recent_blob = ("## 本项目最近产物（可直接用作模板参数，"
-                                   "引擎会自动上传）\n- " + "\n- ".join(names))
+                    recent_blob = ("## 本项目历史产物（**仅**在用户明确要求"
+                                   "「基于上次那张图/上一版继续」时才用；"
+                                   "不要用它代替用户本轮上传的图）\n- "
+                                   + "\n- ".join(names))
         except Exception:
             recent_blob = ""
         tool_call_example = '{"tool": "工具名", "args": {}}'
@@ -282,7 +305,7 @@ class Brain:
   禁止顺序调用两次 run_template 代替管线
 - 模板上加节点（"加LoRA"、"改结构"）→ synthesize + propose_edit
 - **锁构图/锁姿势的转绘（"用XX图做ControlNet引导"、"保持构图换内容"）→ style_transfer 模板，control_type=canny（离线可用）；只有模板做不到的结构变化才用 synthesize**
-- 传图修改（"把这张图改成X风格"）→ analyze_image 先看图 → i2i/style_transfer
+- 传图修改（"把这张图改成X风格"）→ analyze_image 先看图（本轮有上传就不传 path）→ i2i/style_transfer，image 参数填本轮上传的 server_name
 - **修复崩坏（"修复XX/修脸/手崩了/局部坏了"）→ 严格按 repair.md 配方：analyze_image 定位 → search_nodes 找 FaceDetailer/局部重绘节点 → 局部修复链。禁止全图 i2i 修局部**
 - **自由合成（用户明说"自己搭工作流/自由合成/从零建/试试新节点"）→ read_skill(workflow-design/core-nodes) 读方法论 → scaffold 骨架 → 逐环节 propose_edit → 不认识的节点先 learn_node**
 - **视频任务完成 → view_video 评估（use_last: true）**
@@ -303,7 +326,7 @@ class Brain:
 
 ## 工作规则
 1. **先理解再动手**：需求含糊（如"画张图"没说画什么）时用 ask_user 澄清；信息足够就直接执行。
-2. **先看再干**：任务涉及图片（改图/风格转换/参考某张图）时，必须先 analyze_image 看懂图片（内容/风格/构图），再选模板写提示词——不要盲猜图片内容。
+2. **先看再干**：任务涉及图片（改图/风格转换/参考某张图）时，必须先 analyze_image 看懂图片（内容/风格/构图），再选模板写提示词——不要盲猜图片内容。**用户本轮上传了图时，analyze_image 不要传 path**（系统默认分析那张）；只看一次，别对同一张图反复分析。
 3. **提示词由你写，且必须具体**：严格按 prompts.md 的分段结构写（图像八段式/视频四段式）；每项写"画面里能看到什么"，禁止 beautiful/nice/detailed 这类空词；重要元素用权重语法 (词:1.2)；用户没提负面词就保留家族默认负面（引擎会自动补默认项，别整段重写）。
 10. **言外之意**：读懂用户没说出口的需求并补全：头像→1:1/3:4 特写+修脸步骤；海报/封面→竖版+构图留白+negative 防文字水印；壁纸→16:9+主体偏侧留空；证件照→纯色背景+正面+均匀光；商品图→纯色棚拍背景；"同角色多张"→固定 seed 与角色描述块复用；"改季节/时间"→i2i+光影词；"N秒视频"→按 video.md 分段。做完主线后主动检查这些隐含项是否已满足。
 11. **能力优先**：需要某功能（修脸/锁姿势/放大/抠图等）先看上方的"能力→节点偏好"表，用表中本机可用的链路；表里没有或不可用再 search_nodes 探索，探索前先 read_skill(families/<对应家族>)。
@@ -316,6 +339,7 @@ class Brain:
 8. 模型/节点不确定时用 list_models / search_nodes / learn_node 查询，不要猜。
 9. **模型自动适配**：图像模板（t2i/i2i/style_transfer/upscale_pass）的 checkpoint 会自动绑定本机模型——除非用户点名用某模型，否则不要传 ckpt 参数；技能文档里出现具体模型名只是开发机示例，本机缺失时引擎会自动换成同家族模型（settings.json 的 model_prefs 可指定偏好）。
 13. **缺模型先找来源再问用户**：执行结果报 `missing_models` 时，先 `search_models(filename=<缺的文件名>, folder=<models 子目录>)` 查可下载来源（本机 Manager 目录 + HF/hf-mirror/Civitai/ModelScope），再用 `download_model` 请求下载——**url/filename/folder/size 必须原样照抄候选字段**：不要自己拼 HuggingFace 地址（实测拼出来的都是 404），也不要自己估算大小（实测把 4.71MB 写成 1.2GB）。系统会弹出确认弹窗（显示名称/大小/来源/是否适配/目标目录），**由用户决定下载与否**；工具会立刻返回，此时不要重复调用、不要自己假设用户同意。用户同意→系统自动下载并重跑刚才失败的任务；拒绝或下载失败→按规则 12 走缺模型降级，并明确告诉用户缺哪个文件、应该放到本机哪个目录。
+14. **看不到就必须说看不到（硬性）**：`analyze_image` 返回 `ok: false`（HTTP 错误 / 未配置视觉 / 图片不存在 / 被内容安全拦截）时，你**没有看过这张图**。此时：① 如实告诉用户看图失败并附上工具给的原因；② **禁止编造图片内容**（不许写"根据历史记录这张图应该是…"）；③ **禁止用本项目历史产物或历史对话里的其它图片顶替**本轮上传的图；④ 改图/参考图/风格转换类请求**到此停下**，请用户用文字描述画面、或到 ⚙ 里配置视觉模型；只有用户本来就要"纯文字描述生图"（t2i）时才可继续，并在交付时说明"没看到原图，是按文字描述生成的"。
 
 ## 领域技能库（节点速查 + 建图方法论，自由合成必读）
 {skills_blob}"""}]

@@ -281,16 +281,67 @@ def bind_model_downloader() -> None:
 
 
 def get_settings() -> dict:
-    """当前生效配置（key 脱敏）+ settings.json 中已保存的字段。"""
+    """当前生效配置（key 脱敏）+ settings.json 中已保存的字段。
+
+    大脑与视觉两套都返回：只显示大脑那套时，用户改了 API 地址会以为
+    "没保存/没应用"（视觉那一路其实还在旧地址）。
+    """
     from comfy_agent import config as _cfg
-    from ..llm import LLMClient
+    from ..llm import LLMClient, VLMClient
     s = _cfg.load_user_settings()
-    masked = LLMClient().masked()
     return {"ok": True,
-            "effective": masked,
+            "effective": LLMClient().masked(),
+            "vision": VLMClient().effective(),
+            "vision_state": dict(VISION_STATE),
             "saved": {k: (v[:4] + "…" + v[-4:] if k.endswith("_key")
                           and len(v) > 8 else v)
                       for k, v in s.items()}}
+
+
+# 视觉可用性自检状态（启动时跑一次，保存设置后再跑一次）
+VISION_STATE: dict = {"checked": False, "ok": None, "verified": None,
+                      "transient": False, "error": "", "effective": {}}
+
+
+def vision_selfcheck(emit_warning: bool = True) -> dict:
+    """探针一次视觉端点，把"能不能看图"变成用户可见的状态。
+
+    改 provider 后视觉跟着大脑走，但"跟随"只保证地址对，不保证**模型**
+    是视觉模型；探针失败必须明说，不能等到用户上传图片才发现。
+    瞬时报错（5xx/SSL）只标"未确定"并**不**告警：实测服务商常态抽风，
+    据此宣布不可用会让用户白改配置。
+    """
+    from ..llm import VLMClient
+    try:
+        vlm = VLMClient()
+        eff = vlm.effective()
+    except Exception as e:                     # 配置本身有问题
+        VISION_STATE.update(checked=True, ok=False, verified=False,
+                            transient=False, effective={},
+                            error=f"{type(e).__name__}: {e}"[:200])
+        return dict(VISION_STATE)
+    if not eff.get("ready"):
+        VISION_STATE.update(checked=True, ok=False, verified=False,
+                            transient=False, effective=eff,
+                            error="未配置视觉 API Key")
+    else:
+        res = vlm.probe()
+        VISION_STATE.update(checked=True, ok=bool(res.get("ok")),
+                            verified=bool(res.get("verified")),
+                            transient=bool(res.get("transient")),
+                            effective=eff, error=res.get("error") or "")
+    if emit_warning and VISION_STATE["ok"] is False \
+            and not VISION_STATE["transient"]:
+        eff = VISION_STATE["effective"] or {}
+        msg = (f"看图功能不可用：视觉模型 {eff.get('model') or '?'} @ "
+               f"{eff.get('base_url') or '?'} 探针失败（{VISION_STATE['error']}）。"
+               "analyze_image 与图像/视频评估会失败；请在 ⚙ 设置里填一个"
+               "视觉模型（地址/Key 默认跟随大脑）。")
+        try:
+            ev.emit("stage", {"stage": "warning", "detail": {"warning": msg}})
+        except Exception:
+            pass
+    return dict(VISION_STATE)
 
 
 def status_snapshot(project_id: str | None) -> dict:
@@ -317,6 +368,7 @@ def status_snapshot(project_id: str | None) -> dict:
                             in (".mp4", ".webm") else "image",
                             "new": (now - f.stat().st_mtime) < 86400})
     return {"ok": True, "project": bs.project.to_dict(),
+            "vision": dict(VISION_STATE),
             "stage": bs.stage,
             "last_error": bs.last_error,
             "draft": ctx.draft, "draft_meta": ctx.draft_meta,
@@ -461,6 +513,9 @@ class Handler(BaseHTTPRequestHandler):
                 bs.brain.llm.reload_settings()
             except Exception:
                 pass
+        # 视觉是每次调用现构造（自动读新配置），这里重探一次好让面板立刻给出
+        # "可用/不可用 + 原因"，而不是等用户上传图片才发现 400
+        threading.Thread(target=vision_selfcheck, daemon=True).start()
         return self._json({"ok": True, **get_settings()})
 
     def _serve_static(self, name: str, ctype: str):
@@ -640,6 +695,8 @@ def serve(port: int = PORT, open_browser: bool = True):
     SESSION = WebSession()
     SESSION.start_monitors()
     bind_model_downloader()
+    # 视觉自检：后台跑，不阻塞启动（探针失败时推 warning 事件让用户看见）
+    threading.Thread(target=vision_selfcheck, daemon=True).start()
     # PID 文件：供一键启动脚本精确识别/清理本服务进程
     pidfile = config.AGENT_HOME / "webui.pid"
     try:

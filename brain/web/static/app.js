@@ -571,8 +571,14 @@ function addEvalCard(ev) {
 function renderEvalCard(ev) {
   const score = ev.score != null ? `（${ev.score}/10）` : "";
   const cls = ev.verdict === true ? "eval-pass" : ev.verdict === false ? "eval-fail" : "";
+  // 视觉不可用时必须写出来：否则"通过"只是几何检查的结论，语义根本没查
+  const skipped = ev.vlm_error
+    ? `<div class="issue" style="color:#e0a800">⚠ 语义评估已跳过（视觉模型不可用）：${
+        escapeHtml(String(ev.vlm_error).slice(0, 160))}</div>`
+    : "";
   return `<h4>${ev.kind === "video" || ev.kind === "video_forced" ? "🎬 视频评估" : "🖼 图像评估"}
     <span class="${cls}">${ev.verdict === true ? "通过" : ev.verdict === false ? "不达标" : "未知"}${score}</span></h4>` +
+    skipped +
     (ev.issues || []).map((i) =>
       `<div class="issue"><span class="loc">${escapeHtml(i.location || "")}</span> ${escapeHtml(i.description || "")}</div>`).join("");
 }
@@ -901,16 +907,44 @@ async function refreshModelDownloads() {
 }
 
 // ---------- 设置面板 ----------
+// 视觉那一路的生效值必须显示出来：只写"大脑"那套时，用户改了 API 地址会以为
+// 没保存（视觉其实还是旧地址 → analyze_image/评估 400）
+function renderVisionNote(d) {
+  const el = document.getElementById("set_vision_note");
+  if (!el) return;
+  const v = d.vision || {};
+  const st = d.vision_state || {};
+  const parts = [`视觉地址：${v.base_source || "跟随大脑"}`];
+  parts.push(`视觉 Key：${v.key_source || "跟随大脑"}`);
+  let health = "未自检";
+  if (st.checked) {
+    health = st.ok === false
+      ? (st.transient
+         ? `⚠ 未确定（服务商瞬时报错：${(st.error || "").slice(0, 60)}）`
+         : `❌ 不可用（${st.error || "原因未知"}）`)
+      : st.verified === false ? `⚠ 未验证（${st.error || "探针没取到回复"}）`
+      : "✅ 可用（已实测看图）";
+  }
+  el.textContent = `${parts.join(" · ")} · 自检：${health}`;
+  el.style.color = st.checked && st.ok === false ? "#e0a800" : "";
+}
+
 async function openSettings() {
   try {
     const r = await fetch("/api/settings");
     const d = await r.json();
     $("#set_base").value = d.effective?.base_url || "";
     $("#set_model").value = d.effective?.model || "";
-    $("#set_vmodel").value = "";
+    // 预填当前生效的视觉模型（此前恒为空 + 硬编码占位符，用户根本看不到实际用的什么）
+    $("#set_vmodel").value = d.vision?.model || "";
+    $("#set_vbase").value = "";
+    $("#set_vkey").value = "";
     $("#set_key").value = "";
     $("#set_key").placeholder = d.effective?.api_key_masked
       ? `已设置（${d.effective.api_key_masked}），留空保持不变` : "sk-...";
+    $("#set_vkey").placeholder = d.vision?.api_key_masked
+      ? `已设置（${d.vision.api_key_masked}），留空保持不变` : "留空 = 跟随大脑";
+    renderVisionNote(d);
   } catch (e) { /* 后端未就绪 */ }
   $("#settingsmodal").classList.remove("hidden");
 }
@@ -929,10 +963,14 @@ $("#set_save").addEventListener("click", async () => {
   const key = $("#set_key").value.trim();
   const model = $("#set_model").value.trim();
   const vmodel = $("#set_vmodel").value.trim();
+  const vbase = $("#set_vbase").value.trim();
+  const vkey = $("#set_vkey").value.trim();
   if (base) body.llm_base_url = base;
   if (key) body.llm_api_key = key;
   if (model) body.llm_model = model;
   if (vmodel) body.vlm_model = vmodel;
+  if (vbase) body.vlm_base_url = vbase;
+  if (vkey) body.vlm_api_key = vkey;
   const r = await fetch("/api/settings", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -942,10 +980,25 @@ $("#set_save").addEventListener("click", async () => {
   if (d.ok) {
     $("#settingsmodal").classList.add("hidden");
     statusEl.textContent = "设置已保存并生效";
+    refreshVisionNote();      // 视觉自检在服务端后台跑，稍后单独刷新提示
   } else {
     statusEl.textContent = "设置保存失败";
   }
 });
+
+// 保存后单独刷新视觉自检结论（探针是网络请求，不能卡住保存响应）
+async function refreshVisionNote() {
+  try {
+    const r = await fetch("/api/settings");
+    const d = await r.json();
+    renderVisionNote(d);
+    const st = d.vision_state || {};
+    if (st.checked && st.ok === false && !st.transient) {
+      showWarning(`视觉不可用（${d.vision?.model || "?"}）：`
+                  + `${st.error || "原因未知"}——看图与图像评估会失败`);
+    }
+  } catch (e) { /* 后端未就绪 */ }
+}
 
 (async function init() {
   await loadProjects();

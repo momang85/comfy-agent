@@ -93,8 +93,11 @@
     <label>API Key <input id="set_key" type="password" placeholder="sk-..." autocomplete="off">
       <button type="button" id="set_key_toggle" class="mini">显示</button></label>
     <label>大脑模型 <input id="set_model" placeholder="glm-4.5-air"></label>
-    <label>视觉模型 <input id="set_vmodel" placeholder="glm-4.6v"></label>
-    <div class="modal-note">Key 仅保存在本机 .comfy-agent/settings.json（不入 git）。与大脑模型同 key 时视觉 key 留空即可。</div>
+    <label>视觉模型 <input id="set_vmodel" placeholder="必须支持视觉，如 glm-4.6v / qwen-vl-max"></label>
+    <div class="modal-note" id="set_vision_note">视觉地址与 Key 默认跟随大脑。</div>
+    <label>视觉 API 地址（可选） <input id="set_vbase" placeholder="留空 = 跟随大脑"></label>
+    <label>视觉 Key（可选） <input id="set_vkey" type="password" placeholder="留空 = 跟随大脑" autocomplete="off"></label>
+    <div class="modal-note">Key 仅保存在本机 .comfy-agent/settings.json（不入 git）。与大脑模型同 key 时视觉 key 留空即可。多数 provider 的视觉模型名与文本模型不同，必须单独填。</div>
     <div class="modal-actions">
       <button id="set_save">保存</button>
       <button id="set_close">关闭</button>

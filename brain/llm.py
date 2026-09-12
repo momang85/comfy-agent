@@ -35,6 +35,51 @@ _BLOCKED_HOSTS = {
 _BLOCKED_PREFIXES = ("169.254.", "fd00:ec2::")
 
 
+def _probe_png(w: int = 256, h: int = 256) -> bytes:
+    """生成探针图片（纯色 + 白色方块），纯标准库。
+
+    必须是"正常尺寸"的图：部分 provider 收到 1x1 会以
+    "Image dimensions are too small" 报 400，把真正的视觉模型误判为不可用
+    （实测 qwen3.8-max / seed-2.1-pro 就栽在这条上）。
+    """
+    import struct
+    import zlib
+    rgb, box = (40, 70, 180), (70, 70, 190, 190)
+    raw = b""
+    for y in range(h):
+        row = bytearray([0])                      # 每行滤镜字节
+        for x in range(w):
+            row += bytes((255, 255, 255) if box[0] <= x < box[2]
+                         and box[1] <= y < box[3] else rgb)
+        raw += bytes(row)
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff))
+
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw, 9))
+            + chunk(b"IEND", b""))
+
+
+def _is_transient_error(text: str) -> bool:
+    """判断错误是否是"服务商瞬时抽风"（5xx/网关/连接层），而非能力或配置问题。
+
+    区分这两类的意义：502/SSL EOF 是常态波动（实测同一 provider 连续出现
+    503/504/502/SSL EOF），若据此宣布"视觉不可用"，用户会白改一轮配置。
+    """
+    t = (text or "").lower()
+    if any(m in t for m in ("http 5", "bad gateway", "service_busy",
+                            "service busy", "gateway time-out")):
+        return True
+    return any(m in t for m in ("连接中断", "无法连接", "remote end closed",
+                               "ssl", "timed out", "timeout", "connection reset"))
+
+
+_PROBE_PNG = _probe_png()
+
+
 class LLMError(Exception):
     pass
 
@@ -202,22 +247,114 @@ class LLMClient:
 
 
 class VLMClient(LLMClient):
-    """视觉评估客户端（OpenAI 兼容多模态格式）。"""
+    """视觉评估客户端（OpenAI 兼容多模态格式）。
+
+    解析顺序（**默认跟随大脑设置**——改一次 API 地址，看图那一路跟着走）：
+      base_url: env VLM_BASE_URL → settings.vlm_base_url → settings.llm_base_url
+                → cfg.LLM_BASE_URL
+      api_key : env VLM_API_KEY → settings.vlm_api_key → settings.llm_api_key
+                → 注册表/默认值
+      model   : env VLM_MODEL → settings.vlm_model → cfg.VLM_MODEL
+
+    三条都是"先看视觉专用项、没有再跟随大脑"。`cfg.VLM_BASE_URL` 是导入期
+    快照（= 当时还没读 settings 的 LLM_BASE_URL），只能最后兜底：曾因为它排在
+    前面，用户把地址改成新 provider 后视觉仍发往旧地址，配新模型名 → 必 400。
+    """
 
     def __init__(self):
         from comfy_agent import config as _cfg
         s = _cfg.load_user_settings()
         self._resolve(
-            base_url=os.environ.get("VLM_BASE_URL") or s.get("vlm_base_url")
-            or _cfg.VLM_BASE_URL,
-            api_key=os.environ.get("VLM_API_KEY") or s.get("vlm_api_key")
-            or _cfg.VLM_API_KEY or s.get("llm_api_key"),
-            model=os.environ.get("VLM_MODEL") or s.get("vlm_model")
-            or _cfg.VLM_MODEL,
+            base_url=(os.environ.get("VLM_BASE_URL") or s.get("vlm_base_url")
+                      or s.get("llm_base_url") or _cfg.LLM_BASE_URL),
+            api_key=(os.environ.get("VLM_API_KEY") or s.get("vlm_api_key")
+                     or s.get("llm_api_key") or ""),
+            model=(os.environ.get("VLM_MODEL") or s.get("vlm_model")
+                   or _cfg.VLM_MODEL),
         )
         if not self.key:
             self.key = _cfg.load_llm_api_key()
         self._opener = urllib.request.build_opener(_NoRedirect())
+
+    def effective(self) -> dict:
+        """生效配置摘要（脱敏）：供设置面板与启动自检如实显示，不吐 key。"""
+        from comfy_agent import config as _cfg
+        s = _cfg.load_user_settings()
+        if os.environ.get("VLM_BASE_URL"):
+            base_src = "环境变量 VLM_BASE_URL"
+        elif s.get("vlm_base_url"):
+            base_src = "独立配置"
+        elif s.get("llm_base_url"):
+            base_src = f"跟随大脑（{self.base}）"
+        else:
+            base_src = "默认常量"
+        if os.environ.get("VLM_API_KEY"):
+            key_src = "环境变量 VLM_API_KEY"
+        elif s.get("vlm_api_key"):
+            key_src = "独立配置"
+        elif s.get("llm_api_key"):
+            key_src = "跟随大脑"
+        else:
+            key_src = "注册表/默认值"
+        if os.environ.get("VLM_MODEL"):
+            model_src = "环境变量 VLM_MODEL"
+        elif s.get("vlm_model"):
+            model_src = "设置面板"
+        else:
+            model_src = "默认常量"
+        m = self.masked()
+        return {"base_url": self.base, "model": self.model,
+                "api_key_masked": m["api_key_masked"], "ready": self.ready,
+                "base_source": base_src, "key_source": key_src,
+                "model_source": model_src}
+
+    def probe(self, attempts: int = 2) -> dict:
+        """可用性探针（探针图 + 最多 2 次请求）：只回答"这条路能不能看图"。
+
+        启动自检用。视觉不可用必须让用户看见——曾因为视觉地址被冻结在旧
+        provider，看图与图像评估双双 400，而评估的失败被 except 吞掉，
+        表现成"大脑看不到我新上传的图，拿项目旧图干活"。
+
+        判定分三类：
+          - 报错且非瞬时（400 / 不支持 vision / 地址不对）→ ok=False
+          - 报错但属瞬时（5xx/网关/SSL EOF）→ ok=False + transient=True
+            （调用方据此只提示"未确定"，不宣布功能不可用）
+          - 有回复 → 已验证；没报错但空回复 → ok=True + verified=False
+        """
+        if not self.ready:
+            return {"ok": False, "verified": False, "transient": False,
+                    "error": "未配置视觉 API Key"}
+        b64 = base64.b64encode(_PROBE_PNG).decode()
+        body = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": [
+                {"type": "image_url", "image_url": {
+                    "url": f"data:image/png;base64,{b64}"}},
+                {"type": "text", "text": "用一句话描述这张图的内容，只输出这句话"},
+            ]}],
+            "max_tokens": 120,
+            "temperature": 0.0,
+        }
+        last = ""
+        for i in range(max(1, attempts)):
+            try:
+                reply = (self._post(body) or "").strip()
+            except LLMError as e:
+                last = str(e)[:200]
+                if i + 1 < attempts and _is_transient_error(last):
+                    import time as _t
+                    _t.sleep(1.5)
+                    continue
+                return {"ok": False, "verified": False,
+                        "transient": _is_transient_error(last), "error": last}
+            if not reply:
+                return {"ok": True, "verified": False, "transient": False,
+                        "reply": "",
+                        "error": "探针未取到回复（可能是瞬时问题），看图功能未经验证"}
+            return {"ok": True, "verified": True, "transient": False,
+                    "error": "", "reply": reply[:40]}
+        return {"ok": False, "verified": False, "transient": True,
+                "error": last or "探针失败"}
 
     def see_image(self, image_path: str | Path, instruction: str) -> str:
         """看图并回答指令。"""

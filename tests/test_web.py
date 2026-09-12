@@ -84,8 +84,9 @@ class TestChatStream(unittest.TestCase):
         llm.key = "k"
         llm.model = "m"
         opener = mock.Mock()
-        opener.open.side_effect = urllib.error.HTTPError(
-            "u", 400, "bad", {}, None)
+        err = urllib.error.HTTPError("u", 400, "bad", {}, None)
+        self.addCleanup(err.close)      # 不关会在 GC 时报 ResourceWarning
+        opener.open.side_effect = err
         llm._opener = opener
         with mock.patch("brain.llm._assert_safe_url"), \
              mock.patch.object(llm, "chat", return_value="回退文本"):
