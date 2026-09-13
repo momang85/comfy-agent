@@ -656,6 +656,16 @@ def _guard_params(tpl, params: dict) -> tuple[dict, list[str]]:
             notes.append(f"cfg={val} 远高于该模板推荐值 {rec}，已收敛为 "
                          f"{rec}（蒸馏/低步数模型高 CFG 会过曝发糊）")
             params["cfg"] = rec
+    # 局部修复的 denoise 硬下限：普通 SDXL 不是 inpaint 模型，
+    # VAEEncodeForInpaint 会用灰填充遮罩区，denoise 太低就留下**灰块**。
+    # 实测同一张图：0.65 → 平灰块；0.80 → 深灰块带残线；0.85 → 正常出图。
+    if getattr(tpl, "id", "") == "local_repair":
+        dn = params.get("denoise")
+        floor = 0.85
+        if isinstance(dn, (int, float)) and dn < floor:
+            notes.append(f"denoise={dn} 低于局部修复下限 {floor}：遮罩区会留下灰块，"
+                         f"已收敛为 {floor}")
+            params["denoise"] = floor
     return params, notes
 
 
@@ -690,6 +700,24 @@ def upload_input_image(path: str | Path, client: Client = None) -> str:
     return r.get("name", Path(path).name)
 
 
+def _files_on_disk(value: str, node_class: str, input_name: str,
+                   knowledge) -> bool:
+    """该枚举值是不是"本机确实有这个文件"（文件型枚举才判，其它返回 False）。
+
+    用于阻止"服务器清单没刷新时把请求的模型换成 choices[0]"这种静默替换。
+    """
+    try:
+        if not any(str(value).lower().endswith(ext) for ext in
+                   (".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf",
+                    ".sft", ".onnx", ".pkl", ".engine", ".patch")):
+            return False
+        from .validate import _folders_for_input
+        folders = _folders_for_input(node_class, input_name)
+        return bool(knowledge.file_on_disk(value, folders or None))
+    except Exception:
+        return False
+
+
 def _apply_server_fixes(wf: dict, errs: list[dict], knowledge,
                         client: Client = None) -> list:
     """服务器校验错误的参数级自动修复（确定性）。
@@ -709,6 +737,17 @@ def _apply_server_fixes(wf: dict, errs: list[dict], knowledge,
             if not inp:
                 continue
             old = node["inputs"].get(inp)
+            # **文件型枚举绝不静默替换**：请求值在盘上确实存在（例如刚放进
+            # models/ultralytics/ 的脸部模型，服务器清单还没刷新）时保留原值并
+            # 报错——否则会把脸部模型悄悄换成 choices[0]（手部模型），产出
+            # "看起来成功、其实修错了东西"的结果。
+            if isinstance(old, str) and _files_on_disk(old, node["class_type"],
+                                                       inp, knowledge):
+                fixes.append({"node": node_id, "input": inp, "was": old,
+                              "now": None, "applied": False,
+                              "reason": "该文件在本机存在但服务器清单尚未刷新："
+                                        "请重启 ComfyUI 或点重扫，不自动替换"})
+                continue
             choices = None
             if client is not None:
                 try:

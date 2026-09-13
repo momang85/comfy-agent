@@ -36,7 +36,10 @@
 | **box（矩形）** | ✅ 可用 | 遮罩 920×1128（与图同尺寸）、覆盖率 12.6%；**遮罩内 100% 被重绘，区域外 0 像素改动**（含 16px 软边余量）；17–25s；GPU ≤57°C |
 | **provided（用户遮罩）** | ✅ 可用 | 同一区域、同一条尾巴，产物与 box 路线一致；25s |
 | **hand（RMBG 手部 YOLO）** | ✅ **可用（装依赖后）** | 装 `ultralytics` 前：`execution_failed: No module named 'ultralytics'`（节点与权重都在，缺 python 依赖）。装完（`pip install --no-deps ultralytics ultralytics-thop ultralytics-platform`，**刻意不加 opencv-python** 以免替换现有 cv2 4.13.0）后：`hand_yolov8s.pt` 遮罩覆盖率 **1.20%**（bbox 631,491–757,592）、`PitHandDetailer-v2-Test-v9c.pt` **0.71%**，两者**区域外改动均 0 px**，40–123s，GPU ≤58°C |
-| **face（DWPose 关键点）** | ❌ 对动漫图无效 | 链路能跑完（100s），但遮罩覆盖率 **0.000%**：两张真实项目产物（特写 + 全身）都检测不到人。DWPose/YOLOX 是**照片**训练的检测器，动漫插画上不работа；引擎已如实报"没检测到要修的目标" |
+| **face（旧 DWPose）** | ❌ 已弃用 | DWPose/YOLOX 是照片训练的检测器，两张真实动漫产物掩码覆盖率都是 **0.000%**；`UltralyticsDetectorProvider` 又因缺 Impact-Subpack 未注册 |
+| **face（新：YOLO 分割）** | ⚠️ 机制可用、质量不足 | 换成 `AILab_YoloV8Adv` + `face_yolov8n-seg2_60.pt`（本机 Manager 目录里的 face/hair/skin 分割权重，6.77MB，走我们自己的 search→download 装进 `models/ultralytics/`，**枚举免重启**即生效）：<br>· 掩码覆盖率 **19.7%–24.7%**（对比旧路线的 0.000%）、bbox 集中在上半身、区域外 0 像素改动 ✅<br>· 但该权重是**照片向**训练：它的"脸"把头发和大半张脸一起圈进去 → inpaint 结果脸部被重画成一块不自然的区域（用户看到的是"紫脸/灰脸"），**质量不合格** ⚠️<br>· `classes` 过滤无效（该 ckpt 实际只有 1 类） |
+| **denoise 灰块（新发现）** | ✅ FIXED | 普通 SDXL 不是 inpaint 模型，`VAEEncodeForInpaint` 用灰填充遮罩区：实测 **0.65 → 平灰块、0.80 → 深灰块带残线、0.85 → 正常出图**。引擎现在对 `local_repair` 硬收敛到 ≥0.85（`runner._guard_params`），大脑自己传 0.45 也拦得住 |
+| **判据丢失（新发现）** | ✅ FIXED | "脸部和手有一些失真"这类**报缺陷**说法原本不匹配任何约束 → 评估退回通用套话（给过无关的 8/10）。现在 脸部/失真/糊块 等都进判据 |
 
 > 顺带解释了一个老问题：用户此前被建议"装 ComfyUI-Impact-Pack 就能用 ultralytics 检测器"——
 > Impact 包**已经装了**，缺的是同一个 `ultralytics` 依赖（所以 `UltralyticsDetectorProvider` 没注册成功）。
@@ -70,7 +73,11 @@
    ultralytics-thop ultralytics-platform`，**cv2 保持 4.13.0 未被替换**；hand 路线实测可用。
    注：Impact 的 `UltralyticsDetectorProvider` 重启后**仍未注册**（还有别的注册条件），但自动局部修复
    走的是 RMBG 的 `AILab_YoloV8Adv`，不受影响。
-2. **face 路线对动漫内容无效**：DWPose/YOLOX 是照片训练的，两张真实动漫产物的遮罩覆盖率都是 0.000%。
-   需要换检测器（动漫专用脸检权重）或让用户给遮罩——引擎已如实回落到「请用户给遮罩」。
+2. **face 路线：机制通了，质量还不够**。已把 DWPose（0.000%）换成目录里的 `face_yolov8n-seg2_60.pt`，
+   掩码从"空"变成 19.7%–24.7% 的局部区域、区域外 0 像素改动，但该权重**是照片向的**，
+   在动漫图上把头发+大半张脸一起圈进去 → 重绘结果不自然（"紫脸/灰脸"）。
+   **建议下一步装动漫专用分割权重**（Anzhc Face seg 640 v3 y11n.pt，6.1MB，YOLO11n-seg，
+   单类 face，插画掩码 mAP50 0.871）+ 可选 `Anzhc HeadHair seg`；装法与本次相同
+   （丢进 `models/ultralytics/` 即可，免重启）。许可提醒：Anzhc 与 ultralytics 均为 AGPL-3.0。
 3. `provided` 路线的遮罩若与原图尺寸不同，ComfyUI 会缩放，区域可能轻微偏移（box 路线已按真实尺寸修好）。
 4. 自动路由只在"台账拦下重掷"那一刻触发；主动说"帮我修手"时仍由大脑选模板（repair.md 已把 local_repair 列为首选）。

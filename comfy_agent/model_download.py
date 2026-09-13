@@ -313,7 +313,7 @@ def target_path(folder: str, filename: str) -> Path:
 
 
 def folder_hint(save_path: str, mtype: str = "", filename: str = "") -> str:
-    """由 Manager 的 save_path/type 推断 models 子目录（仅作建议）。"""
+    """由 Manager 的 save_path/type/文件名推断 models 子目录（仅作建议）。"""
     seg = str(save_path or "").replace("\\", "/").split("/")[0].strip()
     if seg.lower() in MODEL_FOLDERS:
         return seg.lower()
@@ -323,6 +323,11 @@ def folder_hint(save_path: str, mtype: str = "", filename: str = "") -> str:
     ext = Path(str(filename or "")).suffix.lower()
     if ext in (".safetensors", ".ckpt"):
         return "checkpoints"
+    # .pt 检测器（手部/脸部 YOLO 等）默认落 ultralytics：本机只有这个节点读它
+    if ext in (".pt", ".pth") and any(
+            k in str(filename or "").lower()
+            for k in ("yolo", "face", "hand", "detector", "seg", "sam")):
+        return "ultralytics"
     return ""
 
 

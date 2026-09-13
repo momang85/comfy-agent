@@ -415,12 +415,14 @@ class LocalRepair(Template):
 
     遮罩来源（本机逐节验证过可用；不依赖缺失的 UltralyticsDetectorProvider）：
       hand  AILab_YoloV8Adv + models/ultralytics/hand_yolov8s.pt（权重在盘上）
-      face  DWPreprocessor（显式指定盘上的 yolox_l.torchscript.pt /
-            dw-ll_ucoco_384_bs5.torchscript.pt，否则会去 HF 下不存在的文件）
-            → FaceMaskFromPoseKeypoints
+      face  AILab_YoloV8Adv + face_yolov8n-seg2_60.pt（face/hair/skin 分割模型，
+            走 result.masks 出像素掩码）
       box   MaskRectAreaAdvanced（按图像宽高的比例给框）
       provided 用户给的黑白 PNG
     检测不到目标 → 遮罩覆盖率≈0，引擎据此**如实说明**并请用户给遮罩，不假装修过。
+
+    历史：脸部原先走 DWPose 关键点（DWPreprocessor → FaceMaskFromPoseKeypoints），
+    实测两张真实动漫产物掩码覆盖率都是 0.000%（照片训练的检测器），已弃用。
     """
     id = "local_repair"
     name = "局部修复"
@@ -433,14 +435,18 @@ class LocalRepair(Template):
     #: 各 target 需要的本机节点（引擎据此判断"这条路线能不能走"）
     ROUTE_NODES = {
         "hand": ["AILab_YoloV8Adv", "GrowMask", "VAEEncodeForInpaint"],
-        "face": ["DWPreprocessor", "FaceMaskFromPoseKeypoints", "GrowMask",
-                 "VAEEncodeForInpaint"],
+        "face": ["AILab_YoloV8Adv", "GrowMask", "VAEEncodeForInpaint"],
         "box": ["MaskRectAreaAdvanced", "VAEEncodeForInpaint"],
         "provided": ["LoadImage", "VAEEncodeForInpaint"],
     }
     HAND_MODELS = ["hand_yolov8s.pt", "PitHandDetailer-v2-Test-v9c.pt"]
-    FACE_BBOX = "yolox_l.torchscript.pt"           # 盘上存在；默认值是 .onnx（不存在）
-    FACE_POSE = "dw-ll_ucoco_384_bs5.torchscript.pt"
+    #: 脸部检测：分割模型（face/hair/skin 三类）→ 直接给像素掩码
+    FACE_MODELS = ["face_yolov8n-seg2_60.pt"]
+    #: 置信度阈值：脸部要更低——实测同一张动漫肖像 conf=0.25 检测为 0，
+    #: conf=0.10 得到 19.7% 的局部掩码（模型以照片为主训练集，动漫脸得分偏低）。
+    #: 注意：全身小脸仍可能检测不到，那时引擎会如实报"没定位到"并请用户给遮罩。
+    HAND_CONF = 0.25
+    FACE_CONF = 0.10
 
     def __init__(self, ckpt: str = SDXL_CKPT):
         self.ckpt = ckpt
@@ -465,9 +471,12 @@ class LocalRepair(Template):
                   desc="仅 target=box 时需要，格式 x,y,w,h，取值 0-1（相对图像宽高）"),
             Param("negative", "str",
                   NEG_SDXL if self.family == "sdxl" else NEG_SD, "负面提示词"),
-            Param("denoise", "float", 0.45, "重绘幅度", minv=0.2, maxv=1.0,
-                  desc="局部修复 0.4-0.6 足够；越高越容易破坏周边",
-                  recommended=0.45),
+            Param("denoise", "float", 0.85, "重绘幅度", minv=0.2, maxv=1.0,
+                  desc="**低于 0.85 会在遮罩区留下灰块**（实测同一张图：0.65 平灰块、"
+                       "0.80 深灰块带残线、0.85 正常出图）——普通 SDXL 不是 inpaint "
+                       "模型，VAEEncodeForInpaint 用灰填充遮罩区，denoise 太低画不掉它；"
+                       "引擎会把低于 0.85 的值自动收敛（见 _guard_params）",
+                  recommended=0.85),
             Param("grow_mask_by", "int", 16, "遮罩外扩像素", minv=0, maxv=64,
                   desc="外扩让边缘过渡自然；局部修复默认比整图 inpaint 大"),
             Param("steps", "int", 24, "步数", minv=8, maxv=40),
@@ -481,8 +490,11 @@ class LocalRepair(Template):
                   choices=["karras", "simple", "beta", "normal",
                            "exponential", "sgm_uniform", "ddim_uniform"]),
             Param("yolo_model", "choice", self.HAND_MODELS[0],
-                  "手部检测模型（target=hand/auto 时用）",
+                  "手部检测模型（target=hand 时用）",
                   choices=self.HAND_MODELS),
+            Param("face_model", "choice", self.FACE_MODELS[0],
+                  "脸部检测模型（target=face 时用，分割模型出像素掩码）",
+                  choices=self.FACE_MODELS),
             Param("ckpt", "str", self.ckpt, "模型"),
         ]
 
@@ -533,10 +545,13 @@ class LocalRepair(Template):
         return params
 
     def models_used_for(self, p: dict) -> list[str]:
-        """按路线给依赖（hand 才需要 yolo 权重）。引擎的缺模型判定可用它。"""
+        """按路线给依赖（hand 需手部权重、face 需脸部权重）。引擎的缺模型判定可用它。"""
         base = [self.ckpt]
-        if self.resolve_target(p or {}) == "hand":
+        target = self.resolve_target(p or {})
+        if target == "hand":
             base.append(str((p or {}).get("yolo_model") or self.HAND_MODELS[0]))
+        elif target == "face":
+            base.append(str((p or {}).get("face_model") or self.FACE_MODELS[0]))
         return base
 
     def render(self, p: dict):
@@ -576,23 +591,23 @@ class LocalRepair(Template):
             mask_src = ["20", 0]
             pre_mask = None
         elif target == "face":
-            # 关键：DWPose 的脸部关键点是从**全身姿态**里推出来的，body 必须 enable，
-            # 否则检测不到人 → 遮罩全空（实测踩过：detect_body=disable → 覆盖率 0%）
-            g["21"] = {"class_type": "DWPreprocessor", "inputs": {
-                "image": ["1", 0], "detect_hand": "disable",
-                "detect_body": "enable", "detect_face": "enable",
-                "resolution": 512, "bbox_detector": self.FACE_BBOX,
-                "pose_estimator": self.FACE_POSE,
-                "scale_stick_for_xinsr_cn": "disable"}}
-            g["22"] = {"class_type": "FaceMaskFromPoseKeypoints", "inputs": {
-                "pose_kps": ["21", 1], "person_index": 0}}
-            mask_src = ["22", 0]
+            # 脸部也用 YOLO 分割（AILab_YoloV8Adv 同一个节点，换权重）：
+            # 分割模型走 result.masks 出真正的像素掩码。此前用 DWPose 关键点，
+            # 在动漫图上覆盖率 0.000%（照片训练），已弃用。
+            g["25"] = {"class_type": "AILab_YoloV8Adv", "inputs": {
+                "images": ["1", 0], "yolo_model": q["face_model"],
+                "mask_count": "all", "select_mask_index": "none",
+                "conf": self.FACE_CONF, "iou": 0.45, "classes": "",
+                "device": "auto", "max_det": 300, "retina_masks": True,
+                "agnostic_nms": False}}
+            mask_src = ["25", 1]
             pre_mask = None
         else:                                   # hand（默认）
             g["23"] = {"class_type": "AILab_YoloV8Adv", "inputs": {
                 "images": ["1", 0], "yolo_model": q["yolo_model"],
                 "mask_count": "all", "select_mask_index": "none",
-                "conf": 0.25, "iou": 0.45, "classes": "", "device": "auto",
+                "conf": self.HAND_CONF, "iou": 0.45, "classes": "",
+                "device": "auto",
                 "max_det": 300, "retina_masks": True, "agnostic_nms": False}}
             mask_src = ["23", 1]
             pre_mask = None

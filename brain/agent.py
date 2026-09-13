@@ -398,7 +398,9 @@ class Brain:
                 f"[system] 局部修复路线（{target}）在本机不可用：{why}。"
                 "请如实告知用户并请其提供黑白遮罩，不要整图重绘。"})
             return None
-        params = {"image": base, "target": target, "denoise": 0.45,
+        # denoise 0.85：普通 SDXL 不是 inpaint 模型，VAEEncodeForInpaint 会用灰填充
+        # 遮罩区；实测 denoise 0.65 会留下灰块、0.85 正常（灰块把结果毁成 3/10）
+        params = {"image": base, "target": target, "denoise": 0.85,
                   "prompt": self._repair_prompt(target, contract.source_text)}
         if target == "box":
             params["box"] = self._infer_repair_box(contract.source_text) or ""

@@ -55,8 +55,7 @@ class TestLocalRepairTemplate(unittest.TestCase):
     def test_four_routes_render_expected_nodes(self):
         cases = {
             "hand": ["AILab_YoloV8Adv", "GrowMask", "VAEEncodeForInpaint"],
-            "face": ["DWPreprocessor", "FaceMaskFromPoseKeypoints", "GrowMask",
-                     "VAEEncodeForInpaint"],
+            "face": ["AILab_YoloV8Adv", "GrowMask", "VAEEncodeForInpaint"],
             "box": ["MaskRectAreaAdvanced", "VAEEncodeForInpaint"],
             "provided": ["LoadImage", "VAEEncodeForInpaint"],
         }
@@ -83,18 +82,33 @@ class TestLocalRepairTemplate(unittest.TestCase):
         self.assertEqual(comp["inputs"]["x"], 0)
         self.assertEqual(comp["inputs"]["y"], 0)
 
-    def test_face_route_pins_local_weights(self):
-        """DWPose 默认值是盘上不存在的 .onnx；必须钉住盘上的 .torchscript.pt。"""
+    def test_face_route_uses_face_model_and_takes_slot1_mask(self):
+        """face 走 YOLO 分割（与 hand 同构，换权重），输出槽 1 = MASK。
+
+        历史：face 原走 DWPose 关键点，在动漫图上覆盖率 0.000% 已弃用。
+        """
         wf = self.tpl.render({"image": "a.png", "target": "face",
                               "prompt": "x"})
-        dw = next(v for v in wf.values()
-                  if v["class_type"] == "DWPreprocessor")
-        self.assertEqual(dw["inputs"]["bbox_detector"],
-                         LocalRepair.FACE_BBOX)
-        self.assertEqual(dw["inputs"]["pose_estimator"],
-                         LocalRepair.FACE_POSE)
-        self.assertTrue(LocalRepair.FACE_BBOX.endswith(".torchscript.pt"))
-        self.assertTrue(LocalRepair.FACE_POSE.endswith(".torchscript.pt"))
+        yolo_id = next(nid for nid, v in wf.items()
+                       if v["class_type"] == "AILab_YoloV8Adv")
+        self.assertEqual(wf[yolo_id]["inputs"]["yolo_model"],
+                         LocalRepair.FACE_MODELS[0])
+        self.assertEqual(wf[yolo_id]["inputs"]["images"], ["1", 0])
+        # 该节点的 MASK 槽（slot 1）必须真的接到了 GrowMask
+        grow = next(v for v in wf.values()
+                    if v["class_type"] == "GrowMask")
+        self.assertEqual(grow["inputs"]["mask"], [yolo_id, 1])
+        classes = [v["class_type"] for v in wf.values()]
+        self.assertNotIn("DWPreprocessor", classes)
+        self.assertNotIn("FaceMaskFromPoseKeypoints", classes)
+
+    def test_dwpose_face_route_removed(self):
+        """弃用 DWPose 后不该再留任何引用（常量/节点/路由）。"""
+        self.assertFalse(hasattr(LocalRepair, "FACE_BBOX"))
+        self.assertFalse(hasattr(LocalRepair, "FACE_POSE"))
+        for nodes in LocalRepair.ROUTE_NODES.values():
+            self.assertNotIn("DWPreprocessor", nodes)
+            self.assertNotIn("FaceMaskFromPoseKeypoints", nodes)
 
     def test_auto_infers_target(self):
         self.assertEqual(self.tpl.resolve_target({"prompt": "fix hands"}), "hand")
@@ -138,8 +152,47 @@ class TestLocalRepairTemplate(unittest.TestCase):
             missing = [n for n in nodes if n not in snap]
             self.assertFalse(missing, f"{target} 路线缺本机节点 {missing}")
 
-    def test_hand_weights_declared(self):
+    def test_route_weights_declared(self):
+        """hand/face 的检测权重都要声明（缺失时才走"缺模型→搜索/下载"闭环）。"""
         self.assertIn("hand_yolov8s.pt", self.tpl.models_used)
+        self.assertEqual(self.tpl.models_used_for({"target": "face"})[-1],
+                         LocalRepair.FACE_MODELS[0])
+        self.assertEqual(self.tpl.models_used_for({"target": "hand"})[-1],
+                         LocalRepair.HAND_MODELS[0])
+
+    def test_no_silent_model_substitution_when_file_on_disk(self):
+        """服务器清单没刷新时，盘上存在的文件型枚举不许被替换成 choices[0]。
+
+        否则脸部模型会被悄悄换成手部模型 —— "看起来成功、其实修错了东西"。
+        """
+        import tempfile
+        from comfy_agent.runner import _apply_server_fixes
+        tmp = Path(tempfile.mkdtemp(prefix="noswap_"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp,
+                                                            ignore_errors=True))
+        (tmp / "ultralytics").mkdir()
+        (tmp / "ultralytics" / "face_model.pt").write_bytes(b"x")
+        old_models = config.MODELS_DIR
+        config.MODELS_DIR = tmp
+        self.addCleanup(lambda: setattr(config, "MODELS_DIR", old_models))
+
+        class K:
+            def live_choices(self, cls, inp, client=None):
+                return ["hand_yolov8s.pt"]          # 服务器只知道手部模型
+            def enum_choices(self, cls, inp):
+                return ["hand_yolov8s.pt"]
+            def file_on_disk(self, name, folders=None):
+                p = tmp / "ultralytics" / name
+                return p if p.is_file() else None
+
+        wf = {"23": {"class_type": "AILab_YoloV8Adv",
+                     "inputs": {"yolo_model": "face_model.pt"}}}
+        fixes = _apply_server_fixes(
+            wf, [{"node": "23", "input": "yolo_model",
+                  "message": "value not in choices"}], K())
+        self.assertEqual(wf["23"]["inputs"]["yolo_model"], "face_model.pt")
+        self.assertFalse(fixes[0]["applied"])
+        self.assertIn("尚未刷新", fixes[0]["reason"])
 
 
 class TestLocalFixPhrasings(unittest.TestCase):
@@ -147,7 +200,7 @@ class TestLocalFixPhrasings(unittest.TestCase):
 
     POSITIVE = ["要修手", "修一下手", "手崩了", "手指畸形", "修脸", "脸崩了",
                 "帮我修一下脸", "把那块修一下", "局部有问题", "把袖子去掉",
-                "眼睛崩了"]
+                "眼睛崩了", "脸部和手有一些失真"]
     NEGATIVE = ["换个风格", "画一张全身照", "重做一张"]
 
     def test_phrasings(self):
@@ -165,6 +218,32 @@ class TestLocalFixPhrasings(unittest.TestCase):
             self.assertEqual(Brain._infer_repair_target(t), "face", t)
         # 没有检测目标也没有坐标 → None（转 ask_user 要遮罩）
         self.assertIsNone(Brain._infer_repair_target("把那块修一下"))
+
+
+class TestComplaintCriteria(unittest.TestCase):
+    """用户"报缺陷"式的说法也要变成判据（否则评估退回通用套话）。"""
+
+    def test_real_project6_complaint_becomes_criteria(self):
+        c = TaskContract.parse("脸部和手有一些失真")
+        crit = c.criteria()
+        self.assertIn("面部", crit)
+        self.assertIn("失真", crit)
+        self.assertIn("手部", crit)
+        self.assertNotEqual(crit, "画面清晰完整、主体明确、无畸形")
+
+    def test_denoise_clamped_for_local_repair(self):
+        """低于 0.85 会在遮罩区留灰块（实测 0.65 平灰、0.80 深灰、0.85 正常）→ 引擎收敛。"""
+        from comfy_agent.runner import _guard_params
+        from comfy_agent.templates import get_template
+        t = get_template("local_repair")
+        for bad in (0.45, 0.65, 0.8):
+            p, notes = _guard_params(t, {"target": "face", "denoise": bad})
+            self.assertEqual(p["denoise"], 0.85, bad)
+            self.assertTrue(any("灰块" in n for n in notes), bad)
+        # 合法值不动
+        p2, notes2 = _guard_params(t, {"target": "face", "denoise": 0.9})
+        self.assertEqual(p2["denoise"], 0.9)
+        self.assertEqual(notes2, [])
 
 
 class TestMaskGuard(unittest.TestCase):
