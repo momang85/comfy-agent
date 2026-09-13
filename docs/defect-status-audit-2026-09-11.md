@@ -1,7 +1,7 @@
 # 缺陷台账审计（逐条对照代码 · 2026-09-11）
 
 方法：不采信文档自述，逐项在**当前代码**里核对修复是否真的存在。证据列为 file:line。
-单测：`python -B -m unittest discover -s tests` → **148 tests OK**（2026-09-12 追加缺模型下载后为 **181 tests OK**，追加视觉通道/上传绑定后为 **201 tests OK**，架构反思与机制化后为 **238 tests OK**，自动局部修复后为 **268 tests OK**）。
+单测：`python -B -m unittest discover -s tests` → **148 tests OK**（2026-09-12 追加缺模型下载后为 **181 tests OK**，追加视觉通道/上传绑定后为 **201 tests OK**，架构反思与机制化后为 **238 tests OK**，自动局部修复后为 **270 tests OK**）。
 
 ## 一、状态总表
 

@@ -35,7 +35,7 @@
 |---|---|---|
 | **box（矩形）** | ✅ 可用 | 遮罩 920×1128（与图同尺寸）、覆盖率 12.6%；**遮罩内 100% 被重绘，区域外 0 像素改动**（含 16px 软边余量）；17–25s；GPU ≤57°C |
 | **provided（用户遮罩）** | ✅ 可用 | 同一区域、同一条尾巴，产物与 box 路线一致；25s |
-| **hand（RMBG 手部 YOLO）** | ⚠️ **本机跑不起来** | `execution_failed`：`AILab_YoloV8Adv` → `No module named 'ultralytics'`。节点已注册、权重 `hand_yolov8s.pt`/`PitHandDetailer-v2-Test-v9c.pt` 都在盘上，**缺的是 python 依赖 `ultralytics`**（ComfyUI 解释器里没有；`cv2 4.13.0`/`onnxruntime 1.23.2`/`torch` 都在） |
+| **hand（RMBG 手部 YOLO）** | ✅ **可用（装依赖后）** | 装 `ultralytics` 前：`execution_failed: No module named 'ultralytics'`（节点与权重都在，缺 python 依赖）。装完（`pip install --no-deps ultralytics ultralytics-thop ultralytics-platform`，**刻意不加 opencv-python** 以免替换现有 cv2 4.13.0）后：`hand_yolov8s.pt` 遮罩覆盖率 **1.20%**（bbox 631,491–757,592）、`PitHandDetailer-v2-Test-v9c.pt` **0.71%**，两者**区域外改动均 0 px**，40–123s，GPU ≤58°C |
 | **face（DWPose 关键点）** | ❌ 对动漫图无效 | 链路能跑完（100s），但遮罩覆盖率 **0.000%**：两张真实项目产物（特写 + 全身）都检测不到人。DWPose/YOLOX 是**照片**训练的检测器，动漫插画上不работа；引擎已如实报"没检测到要修的目标" |
 
 > 顺带解释了一个老问题：用户此前被建议"装 ComfyUI-Impact-Pack 就能用 ultralytics 检测器"——
@@ -48,12 +48,29 @@
   遮罩护栏、遮罩覆盖率判定、自动路由 5 条件矩阵、依赖失败归因、尺寸按真实图像）。
 - 扩展 `tests/test_project5_replay.py`：**项目 5 那轮"要修手"现在会自动选 `local_repair(target=hand)`**，
   只渲染 1 次且不再算"未做局部修复"（当时是 3 次整图重绘）。
-- 全量 `python -m unittest discover -s tests` → **268 tests OK**。
+- 全量 `python -m unittest discover -s tests` → **270 tests OK**（新增口语说法识别：实测漏过"修一下手"）。
+
+## 三·B 端到端自动路由实测（真机，2026-09-13）
+
+脚本化 LLM 跑真实一轮（同一张动漫图，需求"手崩了，帮我修一下手；另外这张不是全身照，要全身"）：
+
+| 步骤 | 结果 |
+|---|---|
+| ① 整图 i2i | 完成，评估 **4/10 未通过**（判据含"必须全身"） |
+| ② 第 2 次同手法重掷 | **被台账拦下**（只改 denoise/seed 无效）——日志：`[自动局部修复] target=hand base=…agent_i2i_00024_.png` |
+| ③ 引擎自动改走局部修复 | 自动执行 `local_repair(target=hand)`，基底=上一版产物 |
+| ④ 收尾 | 技法 `['global','inpaint']`；**共 2 次渲染、拦截浪费 0**；交付如实写"评估：未通过（2/10）对照你的要求：必须全身…" |
+
+对照项目 5 同场景：当时是 3 次整图重绘、分数 6→4→6→6、交付谎称"要求已达成"。现在：2 次渲染（1 次整图 +
+1 次真正的局部修复）、不再有"同手法重掷"、结论如实。
 
 ## 四、没做/未解决（诚实登记）
 
-1. **hand 路线需要装 `ultralytics`**（一条 pip 命令，约 50MB，torch 已有）——会改动用户的 ComfyUI 环境，
-   未擅自安装；装完 hand 路线即自动可用（PitHandDetailer 模型本身就是为 AI 绘画的手部修的，命中率比通用 YOLO 高）。
-2. **face 路线对动漫内容无效**：需要换检测器（如动漫专用脸检权重，或用户给的遮罩）。已如实回落到"请用户给遮罩"。
+1. ~~hand 路线需要装 `ultralytics`~~ → **已装**（用户批准）：`pip install --no-deps ultralytics
+   ultralytics-thop ultralytics-platform`，**cv2 保持 4.13.0 未被替换**；hand 路线实测可用。
+   注：Impact 的 `UltralyticsDetectorProvider` 重启后**仍未注册**（还有别的注册条件），但自动局部修复
+   走的是 RMBG 的 `AILab_YoloV8Adv`，不受影响。
+2. **face 路线对动漫内容无效**：DWPose/YOLOX 是照片训练的，两张真实动漫产物的遮罩覆盖率都是 0.000%。
+   需要换检测器（动漫专用脸检权重）或让用户给遮罩——引擎已如实回落到「请用户给遮罩」。
 3. `provided` 路线的遮罩若与原图尺寸不同，ComfyUI 会缩放，区域可能轻微偏移（box 路线已按真实尺寸修好）。
 4. 自动路由只在"台账拦下重掷"那一刻触发；主动说"帮我修手"时仍由大脑选模板（repair.md 已把 local_repair 列为首选）。

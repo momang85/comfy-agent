@@ -142,6 +142,31 @@ class TestLocalRepairTemplate(unittest.TestCase):
         self.assertIn("hand_yolov8s.pt", self.tpl.models_used)
 
 
+class TestLocalFixPhrasings(unittest.TestCase):
+    """口语说法必须被认成局部修复（实测漏过"修一下手"）。"""
+
+    POSITIVE = ["要修手", "修一下手", "手崩了", "手指畸形", "修脸", "脸崩了",
+                "帮我修一下脸", "把那块修一下", "局部有问题", "把袖子去掉",
+                "眼睛崩了"]
+    NEGATIVE = ["换个风格", "画一张全身照", "重做一张"]
+
+    def test_phrasings(self):
+        for t in self.POSITIVE:
+            self.assertTrue(TaskContract.parse(t).is_local_fix, t)
+        for t in self.NEGATIVE:
+            self.assertFalse(TaskContract.parse(t).is_local_fix, t)
+
+    def test_all_positive_phrasings_infer_a_target(self):
+        """能被认成局部修复的说法，至少能推出一个可自动定位的目标或明确转问用户。"""
+        from brain.agent import Brain
+        for t in ("修一下手", "手崩了", "手指畸形"):
+            self.assertEqual(Brain._infer_repair_target(t), "hand", t)
+        for t in ("修一下脸", "脸崩了"):
+            self.assertEqual(Brain._infer_repair_target(t), "face", t)
+        # 没有检测目标也没有坐标 → None（转 ask_user 要遮罩）
+        self.assertIsNone(Brain._infer_repair_target("把那块修一下"))
+
+
 class TestMaskGuard(unittest.TestCase):
     """遮罩绝不能被"本轮上传"自动填充：原图当遮罩 = 整图重绘。"""
 
