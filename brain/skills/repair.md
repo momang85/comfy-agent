@@ -15,12 +15,15 @@ run_template(template_id="local_repair", params={
 })
 ```
 - `target=hand`：本机 RMBG 的手部 YOLO（`hand_yolov8s.pt` 在 `models/ultralytics/`）自动出遮罩
-- `target=face`：脸部用**分割模型** `face_yolov8n-seg2_60.pt`（face/hair/skin 三类，在 `models/ultralytics/`），
-  走 `AILab_YoloV8Adv` 的 MASK 槽出像素掩码（与 hand 同一个节点，只换权重）
-- `target=box`：自己给比例框 `"x,y,w,h"`（0-1，相对图像宽高）
+- `target=face`：脸部用**动漫专用分割权重** `anime_face_seg_v3_y11n.pt`（Anzhc Face seg 640 v3，
+  单类 face，插画掩码 mAP50 0.871）——实测在全身图上能找到 0.69% 的小脸紧框；
+  兜底 `face_yolov8n-seg2_60.pt`（区域偏松，含头发）。检测阈值 conf=0.10（0.25 检测不到动漫脸）
+- `target=box`：自己给比例框 `"x,y,h,w"`（0-1，相对图像宽高）
 - `target=provided`：用户上传黑白遮罩（白色=重绘区域），传 `mask` 参数
+- **denoise 必须 ≥0.85**：普通 SDXL 不是 inpaint 模型，`VAEEncodeForInpaint` 用灰填充遮罩区，
+  实测 0.65 留平灰块、0.80 留深灰块、0.85 正常；引擎会自动收敛（你传更低也会被抬到 0.85）
 - 引擎会把**遮罩外的像素逐像素保留原图**（ImageCompositeMasked 贴回），所以局部就是局部
-- 遮罩无效时引擎会拦下并给出原因：遮罩几乎为空 = **没检测到目标**（手不在画面里/被裁掉），
+- 遮罩无效时引擎会拦下并给出原因：遮罩几乎为空 = **没检测到目标**（脸太小/手不在画面里），
   此时**不要声称已修复**，如实告知并请用户上传黑白遮罩；遮罩接近整图 = 不是局部修复，别这么用
 - 历史：脸部曾走 DWPose 关键点（DWPreprocessor → FaceMaskFromPoseKeypoints），实测在两张真实
   动漫产物上掩码覆盖率都是 **0.000%**（照片训练的检测器），已弃用；不要再回退到那条链

@@ -440,8 +440,12 @@ class LocalRepair(Template):
         "provided": ["LoadImage", "VAEEncodeForInpaint"],
     }
     HAND_MODELS = ["hand_yolov8s.pt", "PitHandDetailer-v2-Test-v9c.pt"]
-    #: 脸部检测：分割模型（face/hair/skin 三类）→ 直接给像素掩码
-    FACE_MODELS = ["face_yolov8n-seg2_60.pt"]
+    #: 脸部检测：动漫专用分割权重优先，照片向的作兜底
+    #: - anime_face_seg_v3_y11n.pt：Anzhc Face seg 640 v3（YOLO11n-seg，单类 face，
+    #:   插画掩码 mAP50 0.871）——实测在全身图上能找到 0.69% 的小脸紧框，
+    #:   而照片向权重完全找不到（0.000%）
+    #: - face_yolov8n-seg2_60.pt：Manager 目录里的 face/hair/skin 分割，兜底用
+    FACE_MODELS = ["anime_face_seg_v3_y11n.pt", "face_yolov8n-seg2_60.pt"]
     #: 置信度阈值：脸部要更低——实测同一张动漫肖像 conf=0.25 检测为 0，
     #: conf=0.10 得到 19.7% 的局部掩码（模型以照片为主训练集，动漫脸得分偏低）。
     #: 注意：全身小脸仍可能检测不到，那时引擎会如实报"没定位到"并请用户给遮罩。

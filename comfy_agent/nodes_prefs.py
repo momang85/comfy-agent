@@ -123,17 +123,16 @@ CAPABILITIES: list[dict] = [
         "id": "local_inpaint", "name": "局部重绘/去物",
         "candidates": [
             {"class": "AILab_YoloV8Adv",
-             "models": ["hand_yolov8s.pt", "face_yolov8n-seg2_60.pt"],
+             "models": ["hand_yolov8s.pt", "anime_face_seg_v3_y11n.pt"],
              "skeleton": ("local_repair",),
              "note": "首选 run_template(local_repair)：hand/face 都走 RMBG 的 YOLO 分割"
-                     "（手部 hand_yolov8s.pt、脸部 face_yolov8n-seg2_60.pt 都在盘上），"
-                     "遮罩外像素逐像素保留原图；target=provided 用用户遮罩"},
+                     "（手部 hand_yolov8s.pt、脸部 anime_face_seg_v3_y11n.pt 动漫专用"
+                     "分割权重），遮罩外像素逐像素保留原图；denoise 需 ≥0.85（引擎会收敛）"},
             {"class": "VAEEncodeForInpaint", "models": [],
              "skeleton": ("inpaint",),
              "note": "已有黑白遮罩时 run_template(inpaint)"},
         ],
-        "fallback": "检测不到目标（如「袖子那块」）就请用户上传黑白遮罩；"
-                    "动漫专用脸检可另装 Anzhc 的 seg 权重（未装）",
+        "fallback": "检测不到目标（如「袖子那块」）就请用户上传黑白遮罩",
     },
     {
         "id": "remove_bg", "name": "抠图/去背景",

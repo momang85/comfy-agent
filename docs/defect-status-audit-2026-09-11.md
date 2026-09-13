@@ -109,7 +109,7 @@
 
 | ID | 问题 | 处理 | 状态 |
 |---|---|---|---|
-| D32 | face 路线掩码恒为 0：DWPose/YOLOX 是照片训练的检测器，动漫图覆盖 0.000%；`UltralyticsDetectorProvider` 又因缺 Impact-Subpack 未注册 | 换成本机已装的 `AILab_YoloV8Adv` + 分割权重 `face_yolov8n-seg2_60.pt`（走我们自己的 search→download 装入 `models/ultralytics/`，枚举免重启）；`ROUTE_NODES["face"]` 与 hand 同构；新增 `face_model` 参数；**删除** DWPose 分支与 `FACE_BBOX`/`FACE_POSE` | ✅ 机制 FIXED（掩码 19.7–24.7%）；⚠️ 该权重为照片向，"脸"区域含头发+大半张脸，**重绘质量不合格** → 建议换动漫专用 seg 权重（Anzhc，未装） |
+| D32 | face 路线掩码恒为 0：DWPose/YOLOX 是照片训练的检测器，动漫图覆盖 0.000%；`UltralyticsDetectorProvider` 又因缺 Impact-Subpack 未注册 | 换成本机已装的 `AILab_YoloV8Adv` + **动漫专用分割权重** `anime_face_seg_v3_y11n.pt`（Anzhc Face seg v3，单类 face，插画 mAP50 0.871；兜底 Manager 目录的 `face_yolov8n-seg2_60.pt`），都走我们自己的 search→download 装入 `models/ultralytics/`（枚举免重启）；`ROUTE_NODES["face"]` 与 hand 同构；新增 `face_model` 参数（conf=0.10）；**删除** DWPose 分支与 `FACE_BBOX`/`FACE_POSE` | ✅ FIXED（全身图小脸掩码 0.69%→修复后**区域外 0 像素改动**、评估通过） |
 | D33 | 局部修复出现**灰块**：普通 SDXL 非 inpaint 模型，`VAEEncodeForInpaint` 用灰填充遮罩区，denoise 太低就画不掉（实测 0.65 平灰、0.80 深灰、0.85 正常） | `runner._guard_params` 对 `local_repair` 硬收敛 denoise ≥0.85（大脑自传 0.45 也拦得住）；模板默认值改 0.85 并写明原因 | ✅ FIXED |
 | D34 | 用户"报缺陷"式说法（"脸部和手有一些失真"）不匹配任何约束 → 评估退回通用套话（给过无关的 8/10） | `task.CONSTRAINT_PATTERNS` 增 脸部/失真/糊块/重影 等；本地修复模式增 `脸部` | ✅ FIXED |
 | D35 | 服务器清单未刷新时可能把请求的模型**静默换成 choices[0]**（脸模型→手模型），产出"看着成功、其实修错东西" | `runner._files_on_disk` + `_apply_server_fixes`：盘上存在的文件型枚举**保留原值并报错**，不自动替换 | ✅ FIXED |
