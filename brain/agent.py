@@ -204,6 +204,16 @@ class Brain:
                                              args.get("params") or {})
                     verdict = self.ctx.task.ledger.check(sig2)
                     if not verdict["allow"]:
+                        # 自动改走局部修复：局部问题只试过整图重绘时，别再重掷，
+                        # 直接跑 local_repair（hand/face 自动生成遮罩）。
+                        auto = self._auto_local_repair(reason=verdict["reason"])
+                        if auto is not None:
+                            result = auto
+                            self.history.append({"role": "user", "content":
+                                "[observation] 已自动改走局部修复："
+                                + json.dumps(result, ensure_ascii=False,
+                                             default=str)[:900]})
+                            continue
                         self.ctx.task.wasted += 1
                         self.ctx.task.notes.append(verdict["reason"])
                         alts = "；".join(verdict.get("alternatives") or [])
@@ -298,6 +308,144 @@ class Brain:
         if not outs:
             parts.append("本轮没有产出可用图片，请补充要求或让我换个做法")
         return "\n".join(parts)
+
+    def _auto_local_repair(self, reason: str = "") -> dict | None:
+        """自动改走局部修复（局部问题不再整图重掷）。
+
+        五个条件**全满足**才动手（避免误触发）：
+          ① 契约判定这是局部修复（"修手/修脸/修局部/去掉…"）
+          ② 台账显示只试过整图（unrepaired_local_fix）
+          ③ 最近一次评估不达标或分数偏低
+          ④ 有可用的基底图（上一版产物或本轮上传）
+          ⑤ 世界模型确认目标路线的节点在本机存在
+        任何一条不满足 → 返回 None（交回原逻辑：提示大脑换手法或问用户）。
+
+        目标推断：手/指→hand，脸/面/五官→face，明确给了比例框→box，
+        都不匹配 → 需要用户提供遮罩（policy.USER_INPUT 口径）。
+        """
+        task = self.ctx.task
+        if task is None:
+            return None
+        contract = task.contract
+        if not contract.is_local_fix:
+            return None
+        if not task.ledger.unrepaired_local_fix():
+            return None
+        last_eval = self.ctx.draft_meta.get("last_eval") or {}
+        verdict = last_eval.get("verdict")
+        score = last_eval.get("score")
+        if verdict is not False and not (isinstance(score, (int, float))
+                                         and score < 7):
+            return None
+        base = self._local_repair_base_image()
+        if not base:
+            return None
+        target = self._infer_repair_target(contract.source_text)
+        if target is None:
+            self.history.append({"role": "user", "content":
+                "[system] 这是局部修复，但既检测不到可自动定位的目标"
+                "（手/脸），也没有坐标或自备遮罩 → 请 ask_user 让用户上传"
+                "黑白遮罩（白色=要重绘区域），不要整图重绘、也不要假装修好。"})
+            return None
+        from .tools import _world_route_ok
+        ok, why = _world_route_ok(self.ctx, "local_repair", target)
+        if not ok:
+            self.history.append({"role": "user", "content":
+                f"[system] 局部修复路线（{target}）在本机不可用：{why}。"
+                "请如实告知用户并请其提供黑白遮罩，不要整图重绘。"})
+            return None
+        params = {"image": base, "target": target, "denoise": 0.45,
+                  "prompt": self._repair_prompt(target, contract.source_text)}
+        if target == "box":
+            params["box"] = self._infer_repair_box(contract.source_text) or ""
+        from .tools import execute_tool
+        from .task import strategy_signature
+        sig = strategy_signature("local_repair", params)
+        v = task.ledger.check(sig)
+        if not v["allow"] and v["action"] == "blocked":
+            return None
+        self._log(f"[自动局部修复] target={target} base={base}（原因：{reason}）")
+        self.ctx.draft_meta.pop("last_eval", None)
+        result = execute_tool(self.ctx, "run_template",
+                             {"template_id": "local_repair", "params": params})
+        self.ctx.task.renders += 1
+        ev_res = (result or {}).get("evaluation") or {}
+        sc = (ev_res.get("vlm") or [{}])[0].get("score") if ev_res.get("vlm") else None
+        task.ledger.record(sig, params, result or {}, score=sc,
+                           reason="自动局部修复")
+        mc = (result or {}).get("mask_check") or {}
+        if (result or {}).get("mask_invalid"):
+            task.notes.append(f"遮罩无效：{mc.get('reason')}")
+        # 路线在运行时不可用（如节点缺 python 依赖）：如实说明，别装作修了
+        exec_err = str((result or {}).get("exec_error") or "")
+        stage = str((result or {}).get("stage") or "")
+        if stage in ("execution_failed", "repair_failed", "render_failed") \
+                and exec_err:
+            from .policy import classify, describe
+            kind = classify(exec_err)
+            task.notes.append(f"局部修复路线执行失败：{exec_err[:120]}")
+            task.wasted += 1
+            self.history.append({"role": "user", "content":
+                f"[system] {target} 路线本机跑不起来：{describe(kind, exec_err)}。"
+                + ("这属于依赖/节点问题（不是模型缺失）——不要让用户去下模型；"
+                   "请如实告知需要补什么，并请其上传黑白遮罩（白色=重绘区域）"
+                   "或改用不需要遮罩的做法。"
+                   if kind == "missing_node" else
+                   "请如实告知失败原因，并请用户决定是否上传遮罩重试。")})
+        return result
+
+    def _local_repair_base_image(self) -> str:
+        """要修的基底图：优先上一版产物，其次本轮上传的原图。"""
+        outs = [str(p) for p in (self.ctx.draft_meta.get("last_outputs") or [])
+                if p]
+        if outs:
+            return outs[-1]
+        up = (self.ctx.current_upload or {}).get("local_path") or ""
+        return str(up)
+
+    @staticmethod
+    def _infer_repair_target(text: str) -> str | None:
+        """从需求文字推断局部修复目标；推不出来返回 None（让用户给遮罩）。
+
+        注意：只有**真的给了比例框**才算 box —— 光说「那块/局部」而没有坐标，
+        模板只能猜一个居中框，那不是修复而是乱改，必须转 ask_user。
+        """
+        t = str(text or "").lower()
+        if any(k in t for k in ("手", "指", "hand", "finger")):
+            return "hand"
+        if any(k in t for k in ("脸", "面", "五官", "眼", "嘴", "face", "eye")):
+            return "face"
+        if Brain._infer_repair_box(text):
+            return "box"
+        return None
+
+    @staticmethod
+    def _infer_repair_box(text: str) -> str | None:
+        """从文字里找 'x,y,w,h' 比例框（0-1）；找不到返回 None。"""
+        import re
+        m = re.search(r"(\d*\.?\d+)\s*[,，]\s*(\d*\.?\d+)\s*[,，]\s*"
+                      r"(\d*\.?\d+)\s*[,，]\s*(\d*\.?\d+)", str(text or ""))
+        if not m:
+            return None
+        vals = [float(x) for x in m.groups()]
+        if any(v > 1.0 for v in vals):      # 像是像素值 → 不猜比例
+            return None
+        return ",".join(str(v) for v in vals)
+
+    @staticmethod
+    def _repair_prompt(target: str, text: str) -> str:
+        """局部修复的提示词：只描述要重绘的区域该长什么样。"""
+        base = {
+            "hand": "perfect hands, five fingers, natural anatomy, "
+                    "clean lineart, same art style",
+            "face": "clean face, natural eyes, symmetric features, "
+                    "same art style",
+            "box": "clean detail, consistent with surroundings, "
+                   "same art style",
+            "provided": "clean detail, consistent with surroundings, "
+                        "same art style",
+        }.get(target, "clean detail, same art style")
+        return base
 
     def _write_task_report(self, task) -> str:
         """把本轮任务状态落盘（可观测性：以后不必人工翻 9000 行日志）。"""

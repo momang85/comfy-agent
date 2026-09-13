@@ -30,6 +30,31 @@ from .validate import validate_workflow, ValidationIssue
 MAX_DETERMINISTIC_ROUNDS = 3
 
 
+def _verify_local_repair_mask(result: dict) -> None:
+    """局部修复后核对遮罩"是否真的局部"。
+
+    两种情况都不能当作成功交付：
+      - 遮罩几乎是空的 → 没检测到目标（手不在画面里/被裁掉），等于没修；
+      - 遮罩接近整图 → 这是整图重绘，违背"局部问题走局部"。
+    核对结果写进 result（mask_check / warnings / hint），让大脑如实说明，
+    而不是拿着"已修复"去交付。
+    """
+    outs = [o for o in (result.get("outputs") or []) if o.get("local_path")]
+    mask_path = next((o["local_path"] for o in outs
+                      if _is_aux_output(o)), None)
+    if not mask_path:
+        return
+    from .mask import check_mask
+    info = check_mask(mask_path)
+    result["mask_check"] = {**info, "path": mask_path}
+    if info.get("ok"):
+        return
+    result["warnings"] = list(result.get("warnings") or []) + [info["reason"]]
+    result["hint"] = info.get("hint") or ""
+    result["mask_invalid"] = True
+    _emit_stage("warning", {"warning": f"局部修复遮罩无效：{info['reason']}"})
+
+
 def _model_present(knowledge, name: str, folders: list) -> bool:
     """"这个模型在不在"的**严格**判断（同名或落盘）。
 
@@ -228,9 +253,26 @@ def run_workflow(workflow_api: dict, *, source: str = "workflow",
                    "outputs": outs, "output_dir": str(out_dir)})
 
     # ---- stage6: 产物强制评估（引擎层保底，不依赖大脑是否记得）----
-    _force_video_evaluation(result, outs, criteria)
-    _force_image_evaluation(result, outs, criteria)
+    # 辅助产物（如局部修复的遮罩预览）不参与评估，也不该被当成交付物
+    outs_main = [o for o in outs if not _is_aux_output(o)]
+    for o in outs:
+        if _is_aux_output(o):
+            o["aux"] = True
+    _force_video_evaluation(result, outs_main, criteria)
+    _force_image_evaluation(result, outs_main, criteria)
+    if outs_main:
+        result["outputs"] = outs
     return result
+
+
+#: 辅助产物（不是交付物）：局部修复的遮罩预览等
+_AUX_MARKERS = ("local_repair_mask", "_mask_", "mask_output")
+
+
+def _is_aux_output(o: dict) -> bool:
+    name = str((o or {}).get("filename") or (o or {}).get("local_path") or "")
+    base = name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return any(m in base for m in _AUX_MARKERS)
 
 
 _VIDEO_EXTS = (".mp4", ".webm", ".mkv", ".mov")
@@ -351,7 +393,7 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     knowledge = kw.get("knowledge") or Knowledge.build()
     # 顺序：别名/单位归一 → 模型适配 → 参数护栏 → 提示词体检
     params, unit_notes = tpl.normalize_params(params)
-    unknown = [k for k in params if k not in known]
+    unknown = [k for k in params if k not in known and not k.startswith("_")]
     # 尺寸/时长类参数写错必须**拦在执行前**：实测 i2i 的 width/height 被静默
     # 忽略，交付里却仍写着"1024x1536"，用户看到的是与实际不符的信息。
     size_like = [k for k in unknown
@@ -371,6 +413,14 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     params, prompt_notes = _apply_prompt_spec(tpl, params)
     # 模型名参数归一（除 ckpt 外，如 LTX 的 text_encoder=Gemma 分片）
     params, model_notes = _canonical_model_params(tpl, params, knowledge)
+    # 渲染前补全（读本地图尺寸等）：必须在输入文件上传**之前**，
+    # 否则参数已被换成服务器文件名，本地文件就读不到了
+    try:
+        hook = getattr(tpl, "pre_render_fix", None)
+        if hook is not None:
+            params = hook(params, kw.get("output_root")) or params
+    except Exception as e:
+        _emit_stage("warning", {"warning": f"渲染前补全失败（已忽略）：{e}"})
     # 输入文件由引擎代传到 ComfyUI /input（大脑常漏这一步，见 problems-detailed P0-4）
     params, upload_notes, upload_err = _ensure_inputs_uploaded(
         tpl, params, kw.get("client"), kw.get("output_root"),
@@ -430,6 +480,8 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
             failed["warnings"] = all_notes
         return failed
     result = run_workflow(wf, source=f"template:{template_id}", **kw)
+    if template_id == "local_repair":
+        _verify_local_repair_mask(result)
     warnings = list(all_notes)
     if unknown:
         warnings.append(f"模板 {template_id} 不识别参数 {unknown}（已忽略）。"
@@ -482,15 +534,30 @@ def _ensure_inputs_uploaded(tpl, params: dict, client, output_root=None,
     up = current_upload or {}
     up_local = str(up.get("local_path") or "")
     up_server = str(up.get("server_name") or "")
-    for pname, _kind in decls:
+    for pname, kind in decls:
         val = params.get(pname)
         auto = False
-        if (not isinstance(val, str) or not val.strip()) and up_local:
+        is_mask = (kind == "mask") or pname == "mask"
+        if (not isinstance(val, str) or not val.strip()) and up_local \
+                and not is_mask:
             # 空着就填本轮上传的本地路径，交给下面的上传逻辑（顺带验证文件在，
             # 不依赖"上传时已进 /input"这个前提，ComfyUI 重启后仍可用）
+            #
+            # 遮罩**绝不**这样补：INP-1（原图当遮罩）实测会让"局部修复"变成
+            # 整图重绘（原图亮度当遮罩），必须由调用方显式给出。
             val = up_local
             auto = True
         if not isinstance(val, str) or not val.strip():
+            if is_mask:
+                needs = getattr(tpl, "needs_input", None)
+                required = True if needs is None else needs(pname, params)
+                if not required:
+                    continue        # 条件型输入（如 hand/face 路线的 mask）跳过
+                return params, notes, (
+                    f"缺少 {pname}（遮罩）：该路线需要显式遮罩。"
+                    "可用 local_repair 的 target=hand/face/box 自动生成，"
+                    "或让用户上传黑白 PNG 后传路径/服务器文件名。"
+                    "（引擎不会拿原图充当遮罩）")
             continue
         p = Path(val)
         if not p.is_file() and up_local and p.name == Path(up_local).name:

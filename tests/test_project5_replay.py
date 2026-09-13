@@ -251,6 +251,50 @@ class TestProject5Replay(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertIn("template_id", r["error"])       # 不是"未知模板: "
 
+    # ---------- ⑦ 项目 5 的"要修手"现在应自动走局部修复 ----------
+    def test_real_hand_fix_turn_now_routes_to_local_repair(self):
+        """日志里 23:50:30 那轮"要修手"整图重绘了 3 次（6→4→6→6）。
+        新机制应改走 local_repair(target=hand)，不再产生第 4 次整图重绘。"""
+        from brain.agent import Brain
+        from brain.task import (TaskContract, TaskState, AttemptLedger,
+                                strategy_signature)
+        # 复刻当时的局面：i2i 整图重绘过一次、评估 6/10 未达标、基底图在手
+        b = Brain.__new__(Brain)
+        b.ctx = type("C", (), {})()
+        b.ctx.draft_meta = {
+            "last_outputs": ["C:/out/agent_i2i_00017_.png"],
+            "last_eval": {"verdict": False, "score": 6}}
+        b.ctx.current_upload = None
+        b.ctx.project = None
+        b.ctx.world = type("W", (), {
+            "route_available": lambda self, nodes: {
+                "available": True, "present": nodes, "missing": [], "hints": []}})()
+        st = TaskState(TaskContract.parse("要修手"))
+        st.ledger.record(strategy_signature("i2i",
+                                            {"image": "agent_i2i_00017_.png"}),
+                         {}, {"ok": True}, score=6)
+        b.ctx.task = st
+        b.history, b.verbose = [], False
+        calls = []
+        from brain import tools as T
+        orig = T.TOOLS["run_template"]["fn"]
+        T.TOOLS["run_template"] = {**T.TOOLS["run_template"],
+                                   "fn": lambda ctx, args: (calls.append(args),
+                                                            {"ok": True,
+                                                             "evaluation": {"vlm": [{"score": 8}]}})[1]}
+        try:
+            out = b._auto_local_repair("同手法重掷")
+        finally:
+            T.TOOLS["run_template"] = {**T.TOOLS["run_template"], "fn": orig}
+        self.assertIsNotNone(out, "应当自动改走局部修复")
+        self.assertEqual(calls[0]["template_id"], "local_repair")
+        self.assertEqual(calls[0]["params"]["target"], "hand")
+        self.assertEqual(calls[0]["params"]["image"],
+                         "C:/out/agent_i2i_00017_.png")
+        # 关键：只渲染 1 次局部修复，且此后不再算"未做局部"
+        self.assertEqual(len(calls), 1)
+        self.assertFalse(st.ledger.unrepaired_local_fix())
+
     # ---------- ⑤ 待确认弹窗那一轮必须交付 ----------
     def test_turn_with_pending_confirmation_still_delivers(self):
         """用脚本化 LLM 跑一轮：工具返回 awaiting_confirm，仍必须有 delivery。"""

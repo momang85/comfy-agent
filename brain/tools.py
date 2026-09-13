@@ -461,6 +461,28 @@ def tool_analyze_image(ctx: ToolContext, args: dict) -> dict:
                          "禁止改用项目里的其它图片")}
 
 
+def _world_route_ok(ctx: ToolContext, template_id: str, target: str) -> tuple:
+    """这条局部修复路线在本机能不能走（节点齐不齐）。
+
+    返回 (ok, why)。缺节点时必须如实说明并改请用户给遮罩——不要硬跑一个
+    必然失败的图（项目 5 的教训：先跑后查才发现缺加载器）。
+    """
+    try:
+        from comfy_agent.templates import get_template
+        tpl = get_template(template_id)
+        nodes = list(getattr(tpl, "ROUTE_NODES", {}).get(target, []))
+        if not nodes:
+            return True, ""
+        res = ctx.world.route_available(nodes)
+        if res["available"]:
+            return True, ""
+        why = "；".join(res.get("hints") or
+                        [f"缺少节点 {res['missing']}"])
+        return False, why
+    except Exception as e:
+        return True, f"（路线校验异常，按可用处理：{type(e).__name__}）"
+
+
 def _task_criteria(ctx: ToolContext) -> str:
     """本轮任务的验收判据（契约里有用户要求就用它，否则空→引擎用兜底）。"""
     task = getattr(ctx, "task", None)
@@ -499,7 +521,7 @@ def tool_run_template(ctx: ToolContext, args: dict) -> dict:
             ctx.draft_meta.pop("missing_retry", None)
         ctx.draft_meta["last_outputs"] = [
             o.get("local_path") for o in result.get("outputs", [])
-            if o.get("local_path")]
+            if o.get("local_path") and not o.get("aux")]
         result["server_images"] = [
             o.get("filename") for o in result.get("outputs", [])
             if o.get("filename")]
@@ -633,13 +655,15 @@ def tool_run_workflow(ctx: ToolContext, args: dict) -> dict:
     result = run_workflow(workflow, source=source, client=ctx.client,
                           knowledge=ctx.knowledge,
                           output_root=ctx.project.outputs_dir()
-                          if ctx.project else None)
+                          if ctx.project else None,
+                          criteria=_task_criteria(ctx))
     # 轨迹与产物关联
     if result.get("ok"):
         ctx.prompt_id = result.get("prompt_id")
+        # 辅助产物（如局部修复的遮罩预览）不算交付物
         ctx.draft_meta["last_outputs"] = [
             o.get("local_path") for o in result.get("outputs", [])
-            if o.get("local_path")]
+            if o.get("local_path") and not o.get("aux")]
         result["server_images"] = [
             o.get("filename") for o in result.get("outputs", [])
             if o.get("filename")]

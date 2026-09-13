@@ -406,5 +406,227 @@ class Inpaint(Template):
         }
 
 
+class LocalRepair(Template):
+    """局部修复（自动遮罩）：只重绘出问题的那一块，其余像素原样保留。
+
+    为什么需要它：局部问题（手崩/脸崩/去掉某物）此前只能整图 i2i 重绘，
+    实测连着重绘三次分数 6→4→6→6，纯烧 GPU 且越修越偏。修局部必须真的
+    "只在那一块采样"。
+
+    遮罩来源（本机逐节验证过可用；不依赖缺失的 UltralyticsDetectorProvider）：
+      hand  AILab_YoloV8Adv + models/ultralytics/hand_yolov8s.pt（权重在盘上）
+      face  DWPreprocessor（显式指定盘上的 yolox_l.torchscript.pt /
+            dw-ll_ucoco_384_bs5.torchscript.pt，否则会去 HF 下不存在的文件）
+            → FaceMaskFromPoseKeypoints
+      box   MaskRectAreaAdvanced（按图像宽高的比例给框）
+      provided 用户给的黑白 PNG
+    检测不到目标 → 遮罩覆盖率≈0，引擎据此**如实说明**并请用户给遮罩，不假装修过。
+    """
+    id = "local_repair"
+    name = "局部修复"
+    category = "image"
+    desc = ("只重绘问题区域（手/脸/指定框/自备遮罩），其余像素与原图逐像素一致；"
+            "局部问题禁止用它做整图重绘")
+    est_vram_gb = 7.0
+    est_minutes = "1-2"
+
+    #: 各 target 需要的本机节点（引擎据此判断"这条路线能不能走"）
+    ROUTE_NODES = {
+        "hand": ["AILab_YoloV8Adv", "GrowMask", "VAEEncodeForInpaint"],
+        "face": ["DWPreprocessor", "FaceMaskFromPoseKeypoints", "GrowMask",
+                 "VAEEncodeForInpaint"],
+        "box": ["MaskRectAreaAdvanced", "VAEEncodeForInpaint"],
+        "provided": ["LoadImage", "VAEEncodeForInpaint"],
+    }
+    HAND_MODELS = ["hand_yolov8s.pt", "PitHandDetailer-v2-Test-v9c.pt"]
+    FACE_BBOX = "yolox_l.torchscript.pt"           # 盘上存在；默认值是 .onnx（不存在）
+    FACE_POSE = "dw-ll_ucoco_384_bs5.torchscript.pt"
+
+    def __init__(self, ckpt: str = SDXL_CKPT):
+        self.ckpt = ckpt
+        self.family = "sdxl" if "xl" in ckpt.lower() else "sd15"
+        # 手部检测权重：本机已在 models/ultralytics/ 下；列进来是为了它万一
+        # 被删掉时走已有的"缺模型→搜索/下载"闭环（路线可用性由 ROUTE_NODES
+        # + 世界模型另判）
+        self.models_used = [ckpt, self.HAND_MODELS[0]]
+
+    def params(self):
+        return [
+            Param("image", "image", "", "原图（要修的图）", required=True),
+            Param("prompt", "str", "", "要重绘成什么样（只描述问题区域）",
+                  required=True,
+                  desc="如 'perfect hands, five fingers, natural anatomy'"),
+            Param("target", "choice", "auto", "修哪里（自动判断遮罩来源）",
+                  choices=["auto", "hand", "face", "box", "provided"],
+                  desc="auto 按提示词猜；box 需给 box；provided 需给 mask"),
+            Param("mask", "image", "", "自备遮罩（白色=重绘区域）",
+                  desc="仅 target=provided 时需要；黑白 PNG"),
+            Param("box", "str", "", "矩形区域（比例）",
+                  desc="仅 target=box 时需要，格式 x,y,w,h，取值 0-1（相对图像宽高）"),
+            Param("negative", "str",
+                  NEG_SDXL if self.family == "sdxl" else NEG_SD, "负面提示词"),
+            Param("denoise", "float", 0.45, "重绘幅度", minv=0.2, maxv=1.0,
+                  desc="局部修复 0.4-0.6 足够；越高越容易破坏周边",
+                  recommended=0.45),
+            Param("grow_mask_by", "int", 16, "遮罩外扩像素", minv=0, maxv=64,
+                  desc="外扩让边缘过渡自然；局部修复默认比整图 inpaint 大"),
+            Param("steps", "int", 24, "步数", minv=8, maxv=40),
+            Param("cfg", "float", 5.0 if self.family == "sdxl" else 7.0,
+                  "CFG", minv=1.0, maxv=12.0),
+            Param("seed", "int", 0, "种子(0=随机)"),
+            Param("sampler", "choice", "dpmpp_2m", "采样器",
+                  choices=["euler", "euler_ancestral", "dpmpp_2m", "dpmpp_2m_sde",
+                           "dpmpp_3m_sde", "ddim", "uni_pc"]),
+            Param("scheduler", "choice", "karras", "调度器",
+                  choices=["karras", "simple", "beta", "normal",
+                           "exponential", "sgm_uniform", "ddim_uniform"]),
+            Param("yolo_model", "choice", self.HAND_MODELS[0],
+                  "手部检测模型（target=hand/auto 时用）",
+                  choices=self.HAND_MODELS),
+            Param("ckpt", "str", self.ckpt, "模型"),
+        ]
+
+    def resolve_target(self, p: dict) -> str:
+        """auto → 按提示词/框/遮罩推断实际路线。"""
+        t = str((p or {}).get("target") or "auto").lower()
+        if t != "auto":
+            return t
+        text = f"{p.get('prompt') or ''} {p.get('negative') or ''}".lower()
+        if any(k in text for k in ("hand", "finger", "手", "指")):
+            return "hand"
+        if any(k in text for k in ("face", "eye", "脸", "面", "五官")):
+            return "face"
+        if p.get("mask"):
+            return "provided"
+        if p.get("box"):
+            return "box"
+        return "hand"          # 兜底：手部是本机最可靠的检测器
+
+    def needs_input(self, pname: str, params: dict) -> bool:
+        """mask 只在 target=provided 时需要（其余路线的遮罩在工作流内生成）。"""
+        if pname == "mask":
+            return self.resolve_target(params or {}) == "provided"
+        return True
+
+    def pre_render_fix(self, params: dict, output_root=None) -> dict:
+        """按真实图像尺寸补全尺寸类参数（必须在输入上传前做）。
+
+        矩形遮罩若按固定 1024 生成、再被 ComfyUI 缩放到真实尺寸，区域会整体
+        偏移（实测遮罩外像素也被改动 4.5%）。这里先把本地图尺寸读出来。
+        """
+        if self.resolve_target(params or {}) != "box":
+            return params
+        try:
+            from ..mask import image_size
+            cand = str((params or {}).get("image") or "")
+            size = image_size(cand) if cand else None
+            if size is None and output_root and cand:
+                base = cand.replace("\\", "/").rsplit("/", 1)[-1]
+                from pathlib import Path as _P
+                hit = next((f for f in _P(output_root).rglob(base)
+                            if f.is_file()), None)
+                size = image_size(hit) if hit else None
+            if size:
+                params["_img_w"], params["_img_h"] = int(size[0]), int(size[1])
+        except Exception:
+            pass
+        return params
+
+    def models_used_for(self, p: dict) -> list[str]:
+        """按路线给依赖（hand 才需要 yolo 权重）。引擎的缺模型判定可用它。"""
+        base = [self.ckpt]
+        if self.resolve_target(p or {}) == "hand":
+            base.append(str((p or {}).get("yolo_model") or self.HAND_MODELS[0]))
+        return base
+
+    def render(self, p: dict):
+        q = self._fill_defaults(p, self.params())
+        seed = q["seed"] or _rand_seed()
+        target = self.resolve_target(q)
+        g = {
+            "1": {"class_type": "LoadImage",
+                  "inputs": {"image": q["image"] or "example.png"}},
+            "3": {"class_type": "CheckpointLoaderSimple",
+                  "inputs": {"ckpt_name": q["ckpt"]}},
+            "4": clip_text_encode(["3", 1], q["prompt"]),
+            "5": clip_text_encode(["3", 1], q["negative"] or ""),
+        }
+        # ---- 遮罩子链：产出 MASK 节点 id ----
+        if target == "provided":
+            g["2"] = {"class_type": "LoadImage",
+                      "inputs": {"image": q["mask"] or "mask.png"}}
+            mask_src = ["2", 1]
+            pre_mask = None
+        elif target == "box":
+            parts = [x.strip() for x in str(q["box"] or "").split(",")]
+            try:
+                bx, by, bw, bh = (float(v) for v in parts[:4])
+            except (TypeError, ValueError):
+                bx = by = 0.3
+                bw = bh = 0.4
+            # 必须按**真实图像尺寸**建矩形：按固定 1024 建再被缩放会整体偏移
+            # （实测遮罩外像素也被改动）。pre_render_fix 把尺寸放在原始参数里
+            # （_fill_defaults 只保留声明过的参数，所以要从 p 里读）
+            iw = int((p or {}).get("_img_w") or 1024)
+            ih = int((p or {}).get("_img_h") or 1024)
+            g["20"] = {"class_type": "MaskRectAreaAdvanced", "inputs": {
+                "x": int(bx * iw), "y": int(by * ih),
+                "width": max(16, int(bw * iw)), "height": max(16, int(bh * ih)),
+                "image_width": iw, "image_height": ih, "blur_radius": 8}}
+            mask_src = ["20", 0]
+            pre_mask = None
+        elif target == "face":
+            # 关键：DWPose 的脸部关键点是从**全身姿态**里推出来的，body 必须 enable，
+            # 否则检测不到人 → 遮罩全空（实测踩过：detect_body=disable → 覆盖率 0%）
+            g["21"] = {"class_type": "DWPreprocessor", "inputs": {
+                "image": ["1", 0], "detect_hand": "disable",
+                "detect_body": "enable", "detect_face": "enable",
+                "resolution": 512, "bbox_detector": self.FACE_BBOX,
+                "pose_estimator": self.FACE_POSE,
+                "scale_stick_for_xinsr_cn": "disable"}}
+            g["22"] = {"class_type": "FaceMaskFromPoseKeypoints", "inputs": {
+                "pose_kps": ["21", 1], "person_index": 0}}
+            mask_src = ["22", 0]
+            pre_mask = None
+        else:                                   # hand（默认）
+            g["23"] = {"class_type": "AILab_YoloV8Adv", "inputs": {
+                "images": ["1", 0], "yolo_model": q["yolo_model"],
+                "mask_count": "all", "select_mask_index": "none",
+                "conf": 0.25, "iou": 0.45, "classes": "", "device": "auto",
+                "max_det": 300, "retina_masks": True, "agnostic_nms": False}}
+            mask_src = ["23", 1]
+            pre_mask = None
+        if pre_mask is None:
+            g["24"] = {"class_type": "GrowMask", "inputs": {
+                "mask": mask_src, "expand": q["grow_mask_by"],
+                "tapered_corners": True}}
+            mask_final = ["24", 0]
+        else:
+            mask_final = mask_src
+        # ---- 采样与合成 ----
+        g["6"] = {"class_type": "VAEEncodeForInpaint", "inputs": {
+            "pixels": ["1", 0], "vae": ["3", 2], "mask": mask_final,
+            "grow_mask_by": 6}}
+        g["7"] = ksampler(["3", 0], ["4", 0], ["5", 0], ["6", 0],
+                          seed=seed, steps=q["steps"], cfg=q["cfg"],
+                          sampler=q["sampler"], scheduler=q["scheduler"],
+                          denoise=q["denoise"])
+        g["8"] = {"class_type": "VAEDecodeTiled", "inputs": {
+            "samples": ["7", 0], "vae": ["3", 2], "tile_size": 512,
+            "overlap": 64, "temporal_size": 64, "temporal_overlap": 8}}
+        # 只把遮罩内的像素贴回原图：遮罩外与原图逐像素一致（可验证）
+        g["9"] = {"class_type": "ImageCompositeMasked", "inputs": {
+            "destination": ["1", 0], "source": ["8", 0], "x": 0, "y": 0,
+            "resize_source": False, "mask": mask_final}}
+        g["10"] = {"class_type": "SaveImage", "inputs": {
+            "images": ["9", 0], "filename_prefix": "agent_local_repair"}}
+        # 存出遮罩：引擎据此判断"检测到没有/是不是整图"，决定要不要如实请用户介入
+        g["11"] = {"class_type": "MaskToImage", "inputs": {"mask": mask_final}}
+        g["12"] = {"class_type": "SaveImage", "inputs": {
+            "images": ["11", 0], "filename_prefix": "agent_local_repair_mask"}}
+        return g
+
+
 TEMPLATES_IMAGE = [T2I(SDXL_CKPT), T2I(SD15_CKPT), I2I(SDXL_CKPT),
-                   StyleTransfer(), UpscalePass(), Inpaint(SDXL_CKPT)]
+                   StyleTransfer(), UpscalePass(), Inpaint(SDXL_CKPT),
+                   LocalRepair(SDXL_CKPT)]

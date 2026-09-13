@@ -40,8 +40,10 @@ CONSTRAINT_PATTERNS: list[tuple[str, str]] = [
 ]
 
 # 约束词 → 应当走的链路（用于"局部问题别整图重绘"这类判断）
+# 除了身体部位，区域指代词（那块/某处/局部）也算局部修复意图
 LOCAL_FIX_PATTERN = re.compile(
-    r"修手|手部|手指|修脸|脸崩|面部|局部|扣掉|去掉|抹掉|把脸|脸.*修|修.*脸")
+    r"修手|手部|手指|修脸|脸崩|面部|局部|扣掉|去掉|抹掉|把脸|脸.*修|修.*脸|"
+    r"那块|这块|那一块|这一块|某处|一处|某个地方|改一处")
 
 
 class TaskContract:
@@ -97,6 +99,10 @@ class TaskContract:
                 "uses_upload": self.uses_upload}
 
 
+#: 局部修复类模板：算 "inpaint" 手法（判"有没有试过局部"靠它）
+LOCAL_TEMPLATES = frozenset(("inpaint", "local_repair"))
+
+
 def strategy_signature(template_id: str, params: dict) -> tuple:
     """策略签名：同模板 + 同基底图 + 同手段。
 
@@ -112,8 +118,10 @@ def strategy_signature(template_id: str, params: dict) -> tuple:
     if not base:                       # 没有基底图时用提示词首段当"题材"
         base = str(params.get("prompt") or "")[:80]
     # 局部修复与整图重绘是两种手法，签名要能区分
-    mode = "inpaint" if (params.get("mask") or params.get("grow_mask_by")
-                         is not None) else "global"
+    is_local = (str(template_id) in LOCAL_TEMPLATES
+                or bool(params.get("mask"))
+                or params.get("grow_mask_by") is not None)
+    mode = "inpaint" if is_local else "global"
     return (str(template_id), base, mode)
 
 
@@ -181,6 +189,11 @@ class AttemptLedger:
     def unrepaired_local_fix(self) -> bool:
         """已试过整图重绘但没试过局部修复（局部问题应当走局部）。"""
         return "global" in self.used_modes and "inpaint" not in self.used_modes
+
+    def local_repair_targets(self) -> list[str]:
+        """已经用过的局部修复目标（避免对同一目标反复试）。"""
+        return sorted({a["signature"][0] for a in self.attempts
+                       if len(a["signature"]) > 2 and a["signature"][2] == "inpaint"})
 
     def brief(self) -> str:
         if not self.attempts:

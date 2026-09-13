@@ -1,7 +1,7 @@
 # 缺陷台账审计（逐条对照代码 · 2026-09-11）
 
 方法：不采信文档自述，逐项在**当前代码**里核对修复是否真的存在。证据列为 file:line。
-单测：`python -B -m unittest discover -s tests` → **148 tests OK**（2026-09-12 追加缺模型下载后为 **181 tests OK**，追加视觉通道/上传绑定后为 **201 tests OK**，架构反思与机制化后为 **238 tests OK**）。
+单测：`python -B -m unittest discover -s tests` → **148 tests OK**（2026-09-12 追加缺模型下载后为 **181 tests OK**，追加视觉通道/上传绑定后为 **201 tests OK**，架构反思与机制化后为 **238 tests OK**，自动局部修复后为 **268 tests OK**）。
 
 ## 一、状态总表
 
@@ -85,3 +85,12 @@
 | D20 | 重跑消息前提编造（"刚才因缺模型失败"） | `missing_retry` 只在 runner 真因 `missing_models` 早退时写入；无记录时只中性告知已就绪 | ✅ FIXED |
 | D21 | 异常让整轮没有回复且无痕迹（真机复现 SSL EOF） | `handle()` 包住工具循环：任何异常都产出"解释 + task report + turn_end"；LLM 瞬时故障退避重试 1 次；审计写失败改为可见 | ✅ FIXED |
 | D22 | `validate` 带阻断错误却 `ok:true`；尺寸参数被静默忽略 | `tool_validate` 有 blocker 即 `ok:false`；尺寸类未知参数**拦在执行前**并给替代参数名 | ✅ FIXED |
+
+## 七、2026-09-13 追加：自动走局部修复（详见 `docs/local-repair-auto-route-2026-09-13.md`）
+
+| ID | 问题 | 机制化修复 | 状态 |
+|---|---|---|---|
+| D23 | 局部问题只能整图重绘：项目 5"要修手"连着重绘 3 次（6→4→6→6）；台账的 `unrepaired_local_fix()` 与拦截建议只是**文本**，无人执行 | 新模板 `local_repair`（hand/face/box/provided 四条遮罩链 + `ImageCompositeMasked` 只贴回遮罩区）+ `_auto_local_repair` 五条件自动路由 + `mask.py` 遮罩有效性判定 + `strategy_signature` 认 local_repair + `run_workflow` 补 criteria | ✅ FIXED（hand 路线待装 `ultralytics`；face 路线对动漫内容无效，已如实回落） |
+| D24 | 遮罩会被"本轮上传"自动填充 → 原图当自己的遮罩（等于整图重绘） | `INPUT_FILE_PARAMS` 用 kind=`mask` 声明 + `Template.needs_input()` 条件必需；引擎拒绝自动填充遮罩 | ✅ FIXED |
+| D25 | 矩形遮罩按固定 1024 生成再被缩放 → 区域整体偏移（实测区域外像素被改动 4.5%） | `Template.pre_render_fix()` 钩子（在上传替换参数**之前**读真实尺寸）+ `mask.image_size()`（PNG/JPEG 纯标准库） | ✅ FIXED（实测区域外 **0 像素**改动） |
+| D26 | 节点在但 python 依赖缺失时错误归因不清（会误导成"缺模型"） | `policy` 增 `no module named` 归类 + 自动路由把依赖失败按"节点/依赖问题"说明并转"请用户给遮罩" | ✅ FIXED |

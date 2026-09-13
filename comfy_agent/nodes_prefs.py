@@ -122,11 +122,17 @@ CAPABILITIES: list[dict] = [
     {
         "id": "local_inpaint", "name": "局部重绘/去物",
         "candidates": [
+            {"class": "VAEEncodeForInpaint", "models": ["hand_yolov8s.pt"],
+             "skeleton": ("local_repair",),
+             "note": "首选 run_template(local_repair)：target=hand/face 自动生成遮罩"
+                     "（RMBG 手部 YOLO 与 DWPose 脸部权重都在盘上，无需下载），"
+                     "遮罩外像素逐像素保留原图；target=provided 用用户给的遮罩"},
             {"class": "VAEEncodeForInpaint", "models": [],
              "skeleton": ("inpaint",),
-             "note": "直接 run_template(inpaint)（原图+遮罩，零额外模型）"},
+             "note": "已有黑白遮罩时 run_template(inpaint)"},
         ],
-        "fallback": "SD1.5 加 control_v11p_sd15_inpaint 控制网强化边缘融合",
+        "fallback": "检测不到目标（如「袖子那块」）就请用户上传黑白遮罩；"
+                    "SD1.5 可加 control_v11p_sd15_inpaint 控制网强化边缘融合",
     },
     {
         "id": "remove_bg", "name": "抠图/去背景",

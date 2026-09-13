@@ -57,6 +57,9 @@ INPUT_FILE_PARAMS: dict[str, list[tuple[str, str]]] = {
     "style_transfer": [("image", "image")],
     "upscale_pass": [("image", "image")],
     "inpaint": [("image", "image"), ("mask", "image")],
+    # local_repair：mask 只在 target=provided 时给；kind="mask" 会被引擎
+    # 拒绝"自动填充"（绝不拿原图当遮罩，那等于整图重绘）
+    "local_repair": [("image", "image"), ("mask", "mask")],
     "minimax_i2v": [("image", "image")],
     "ltx_i2v": [("image", "image")],
     "extract_frame": [("video", "video")],
@@ -79,6 +82,25 @@ class Template:
     def input_files(self) -> list:
         """输入文件参数声明 [(参数名, 类型)]，见 INPUT_FILE_PARAMS。"""
         return INPUT_FILE_PARAMS.get(self.id, [])
+
+    def needs_input(self, pname: str, params: dict) -> bool:
+        """该输入文件在当前参数下是否必需。
+
+        默认全部必需；条件型输入（如 local_repair 的 mask 只在
+        target=provided 时用，hand/face/box 的遮罩由工作流内部生成）
+        由模板覆盖，引擎据此决定"为空"是报错还是跳过。
+        """
+        return True
+
+    def pre_render_fix(self, params: dict, output_root=None) -> dict:
+        """渲染前的参数补全（可选钩子）。
+
+        在输入文件被上传、参数被换成服务器文件名**之前**调用，所以还能读到
+        本地文件——需要读图像尺寸等元信息的模板靠它（尺寸类参数一旦按错值
+        生成就会被 ComfyUI 缩放，区域整体偏移）。
+        返回 params（可原地修改）。默认不做任何事。
+        """
+        return params
 
     def params(self) -> list[Param]:
         raise NotImplementedError

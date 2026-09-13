@@ -29,7 +29,7 @@ ACTIONS: dict[str, list[str]] = {
     MISSING_ASSET: ["resolve_asset", "download_or_ask", "degrade"],
     MISSING_NODE: ["explain_missing_node", "use_alternative_route", "ask_user"],
     TRANSIENT: ["retry_once"],
-    SEMANTIC: ["change_method", "ask_user"],
+    SEMANTIC: ["local_repair", "change_method", "ask_user"],
     BUDGET: ["stop_and_report"],
     USER_INPUT: ["ask_user"],
     UNKNOWN: ["inspect", "ask_user"],
@@ -42,7 +42,8 @@ _HINTS: list[tuple[str, str]] = [
     (r"未配置.*key|未配置视觉|api_key", CONFIG),
     # 缺节点/依赖（比缺模型更该先判：下了也没用）
     (r"本机没有节点|node.*not (found|exist)|缺少节点|no such node", MISSING_NODE),
-    (r"cannot import|importerror|module.*not found|依赖", MISSING_NODE),
+    (r"cannot import|importerror|no module named|module.*not found|"
+     r"依赖", MISSING_NODE),
     # 缺资产
     (r"缺少模型|missing model|value not in list|not in choices|"
      r"checkpoint.*not found|找不到模型", MISSING_ASSET),
