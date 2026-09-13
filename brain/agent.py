@@ -32,6 +32,9 @@ class Brain:
         self.history: list[dict] = []     # LLM messages
         self.skills = SkillStore(self.project.skills_path())
         self._run_signatures: dict = {}  # 相同参数重试护栏（(模板,参数) → 次数）
+        # 引擎代码指纹：启动时快照，每回合比对（改完没重启 → 显式告警而非静默跑旧码）
+        from comfy_agent.freshness import code_fingerprint
+        self._code_fp = code_fingerprint()
         # 会话审计按项目落盘（事件按项目标签过滤）
         from .events import SessionAdapter
         self._session_log = SessionAdapter(self.project.history_path(),
@@ -102,6 +105,21 @@ class Brain:
             ev("stage", {"stage": "thinking", "detail": {
                 "contract": contract.constraints}})
         interrupted = ""
+        # 代码新鲜度：启动时（Brain 构造）取指纹，每回合开始比对。
+        # 改完代码没重启服务时，旧逻辑会在用户毫无察觉的情况下继续跑
+        # （项目 6 事故根因：新增的输入文件声明没生效 → 图片没上传 → 连败两次）
+        from comfy_agent.freshness import changed_since, stale_message
+        changed = changed_since(self._code_fp)
+        self.ctx.stale_code = bool(changed)
+        if changed:
+            msg = stale_message(changed)
+            self._log(f"[陈旧代码] {'、'.join(changed)}")
+            ev("stage", {"stage": "warning", "detail": {"warning": msg}})
+            self.history.append({"role": "user", "content":
+                f"[system] {msg}\n"
+                "你可以照常与用户对话、解释结果，但**不要调用任何生成类工具**"
+                "（run_template/run_workflow/submit）；若用户要求出图，"
+                "请先请其重启服务。"})
         try:
             final_reply = self._tool_loop(run_count)
         except Exception as e:
@@ -239,6 +257,17 @@ class Brain:
                 if self.verbose:
                     self._log(f"[工具] {name} "
                               f"{json.dumps(args, ensure_ascii=False)[:120]}")
+                # 陈旧代码下不跑生成类工具：用旧逻辑出的图既不可信也白烧 GPU，
+                # 明确报错让用户重启（项目 6 事故的直接教训）
+                if getattr(self.ctx, "stale_code", False) and name in (
+                        "run_template", "run_workflow", "submit"):
+                    self.history.append({"role": "user", "content":
+                        "[system] 引擎代码已更新但服务未重启，已拒绝执行 "
+                        f"{name}。请告知用户重启 Web UI 后再试。"})
+                    ev("tool_end", {"tool": name, "ok": False,
+                                    "blocked": True,
+                                    "summary": "引擎代码已更新，请重启服务"})
+                    continue
                 ev("tool_start", {"tool": name, "args": args})
                 draft_before = json.dumps(self.ctx.draft, default=str) \
                     if self.ctx.draft else None
@@ -250,12 +279,27 @@ class Brain:
                         score = (ev_res.get("vlm") or [{}])[0].get("score") \
                             if ev_res.get("vlm") else None
                         from .task import strategy_signature
+                        from .task import AttemptLedger as _AL
+                        # 遮罩为空 = 没定位到目标：这次"局部修复"其实什么都没改，
+                        # 不算"修过但没修好"，也就不占手法额度（按技术失败记）
+                        mask_bad = bool(result.get("mask_invalid"))
                         self.ctx.task.ledger.record(
                             strategy_signature(args.get("template_id", name),
                                                args.get("params") or {}),
                             args.get("params") or {}, result, score=score,
-                            reason=str(result.get("error") or "")[:120])
+                            reason=str(result.get("error") or "")[:120],
+                            technical=_AL.is_technical(result) or mask_bad)
                         self.ctx.task.renders += 1
+                        if mask_bad:
+                            note = (result.get("mask_check") or {}).get("reason")
+                            self.ctx.task.notes.append(f"遮罩无效：{note}")
+                            self.history.append({"role": "user", "content":
+                                "[system] 本次局部修复的遮罩是空的（没定位到要修的"
+                                "区域），遮罩区实际**没有被重绘**——不要把这次当成"
+                                "修复成功，也不要拿它去交付。请如实告诉用户"
+                                "「没定位到目标」，并请其上传黑白遮罩（白色=要重绘"
+                                "区域）或给出比例坐标；换其它 target 也一样，"
+                                "本机对这类内容没有可靠的自动检测器。"})
                 # 待用户决策（如下载确认）：记状态，且本轮必须给出回复
                 if isinstance(result, dict) and result.get("awaiting_confirm"):
                     self.ctx.task and self.ctx.task.set_phase("awaiting_user")
@@ -371,8 +415,10 @@ class Brain:
         self.ctx.task.renders += 1
         ev_res = (result or {}).get("evaluation") or {}
         sc = (ev_res.get("vlm") or [{}])[0].get("score") if ev_res.get("vlm") else None
+        from .task import AttemptLedger
         task.ledger.record(sig, params, result or {}, score=sc,
-                           reason="自动局部修复")
+                           reason="自动局部修复",
+                           technical=AttemptLedger.is_technical(result or {}))
         mc = (result or {}).get("mask_check") or {}
         if (result or {}).get("mask_invalid"):
             task.notes.append(f"遮罩无效：{mc.get('reason')}")

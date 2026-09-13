@@ -55,6 +55,27 @@ def _verify_local_repair_mask(result: dict) -> None:
     _emit_stage("warning", {"warning": f"局部修复遮罩无效：{info['reason']}"})
 
 
+def _has_path_separator(val: str) -> bool:
+    return "/" in val or "\\" in val or ":" in val
+
+
+def _server_has_input(client, name: str, kind: str) -> bool:
+    """名字是否已在 ComfyUI /input 里（大脑先用 upload_image 传过的情况）。
+
+    只对图片/视频类参数问一次；拿不到答案就按"存在"处理（不误报）。
+    """
+    if client is None or kind not in ("image", "video"):
+        return True
+    try:
+        entries = client.get("/object_info/LoadImage").get("LoadImage", {})
+        choices = entries.get("input", {}).get("required", {}).get("image", [[]])[0]
+        if choices:
+            return name in choices
+    except Exception:
+        pass
+    return True
+
+
 def _model_present(knowledge, name: str, folders: list) -> bool:
     """"这个模型在不在"的**严格**判断（同名或落盘）。
 
@@ -563,21 +584,45 @@ def _ensure_inputs_uploaded(tpl, params: dict, client, output_root=None,
         if not p.is_file() and up_local and p.name == Path(up_local).name:
             p = Path(up_local)          # 大脑写的正是本轮上传的文件名
         if not p.is_file():
-            # 精确文件名兜底：uploads/ 优先，再产物目录
+            # 精确文件名兜底：uploads/ 优先，再产物目录（含**跨轮**产物子目录）
             cand = None
-            for root in (Path(output_root).parent / "uploads"
-                         if output_root else None, output_root):
-                if cand is not None or root is None:
-                    continue
+            roots = []
+            if output_root:
+                roots.append(Path(output_root).parent / "uploads")
+                roots.append(Path(output_root))
+            for root in roots:
+                if cand is not None:
+                    break
                 try:
                     cand = next((f for f in root.rglob(p.name)
                                  if f.is_file()), None)
                 except Exception:
                     cand = None
+            # 再兜一层：uploads 与产物根都可能是相对路径，按绝对基准重试一次
+            if cand is None and output_root:
+                try:
+                    base = Path(output_root).resolve().parent
+                    for root in (base / "uploads", base):
+                        cand = next((f for f in root.rglob(p.name)
+                                     if f.is_file()), None)
+                        if cand is not None:
+                            break
+                except Exception:
+                    cand = None
             if cand:
                 p = cand
         if not p.is_file():
-            continue          # 既不是本地文件也找不到 → 交给后续校验报错
+            # 既不是本地文件、也没有同名产物：可能是"已经上传过的服务器文件名"。
+            # 先问服务器有没有这个文件；没有就报可执行的错，而不是把原值丢给
+            # LoadImage 让服务器以 Invalid image file 拒收（项目 6 实证）
+            if not _has_path_separator(val) and _server_has_input(
+                    client, val, kind):
+                continue
+            return params, notes, (
+                f"{pname}={val!r} 既不是本机文件，也不在 ComfyUI /input："
+                "请先用 upload_image 取得 server_name，或传本机绝对路径"
+                "（引擎会自动上传）。产物文件名可以带扩展名直接传，"
+                "引擎会在项目 uploads/ 与 outputs/ 里按精确文件名查找。")
         try:
             cli = client or Client()
             server_name = (cli.upload_image(p) or {}).get("name", p.name)

@@ -390,6 +390,8 @@ def status_snapshot(project_id: str | None) -> dict:
             "vision": dict(VISION_STATE),
             "stage": bs.stage,
             "last_error": bs.last_error,
+            # 陈旧代码标记：服务在跑旧代码时前端要显眼提示重启（项目 6 事故）
+            "stale_code": bool(getattr(ctx, "stale_code", False)),
             "draft": ctx.draft, "draft_meta": ctx.draft_meta,
             "outputs": outputs}
 

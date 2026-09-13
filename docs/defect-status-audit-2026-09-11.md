@@ -1,7 +1,7 @@
 # 缺陷台账审计（逐条对照代码 · 2026-09-11）
 
 方法：不采信文档自述，逐项在**当前代码**里核对修复是否真的存在。证据列为 file:line。
-单测：`python -B -m unittest discover -s tests` → **148 tests OK**（2026-09-12 追加缺模型下载后为 **181 tests OK**，追加视觉通道/上传绑定后为 **201 tests OK**，架构反思与机制化后为 **238 tests OK**，自动局部修复后为 **270 tests OK**）。
+单测：`python -B -m unittest discover -s tests` → **148 tests OK**（2026-09-12 追加缺模型下载后为 **181 tests OK**，追加视觉通道/上传绑定后为 **201 tests OK**，架构反思与机制化后为 **238 tests OK**，自动局部修复后为 **270 tests OK**，项目 6 事故修复后为 **292 tests OK**）。
 
 ## 一、状态总表
 
@@ -94,3 +94,13 @@
 | D24 | 遮罩会被"本轮上传"自动填充 → 原图当自己的遮罩（等于整图重绘） | `INPUT_FILE_PARAMS` 用 kind=`mask` 声明 + `Template.needs_input()` 条件必需；引擎拒绝自动填充遮罩 | ✅ FIXED |
 | D25 | 矩形遮罩按固定 1024 生成再被缩放 → 区域整体偏移（实测区域外像素被改动 4.5%） | `Template.pre_render_fix()` 钩子（在上传替换参数**之前**读真实尺寸）+ `mask.image_size()`（PNG/JPEG 纯标准库） | ✅ FIXED（实测区域外 **0 像素**改动） |
 | D26 | 节点在但 python 依赖缺失时错误归因不清（会误导成"缺模型"） | `policy` 增 `no module named` 归类 + 自动路由把依赖失败按"节点/依赖问题"说明并转"请用户给遮罩" | ✅ FIXED |
+
+## 八、2026-09-13 追加：项目 6 工具反复失败（详见 `docs/project6-stale-code-diagnosis-2026-09-13.md`）
+
+| ID | 问题 | 机制化修复 | 状态 |
+|---|---|---|---|
+| D27 | **服务跑旧代码**：进程 09:58 启动，而 `local_repair` 的输入声明 10:08 才加 → 引擎不上传图片 → ComfyUI `LoadImage` 以 `Invalid image file` 拒收（连败 2 次） | `comfy_agent/freshness.py`：17 个模块指纹，每回合比对；陈旧时告警 + **硬拦生成类工具** + `/api/status.stale_code` + 前端不消失的红色提示 | ✅ FIXED |
+| D28 | 裸文件名不搜产物目录：`agent_t2i_00062_.png`（上一轮产物）在 uploads 里找不到 → `analyze_image` 报"图片不存在"，引擎把原值丢给 LoadImage | `_ensure_inputs_uploaded`/`_resolve_upload` 增加"项目 outputs 精确文件名"查找；仍找不到时问一次服务器 /input，再返回**可执行报错**（upload_image / 绝对路径）。保持只认精确匹配 | ✅ FIXED |
+| D29 | **技术失败消耗手法额度**（我的缺陷）：两次"根本没跑起来"被记成"local_repair 试过 1 次" → 后续同手法被 `blocked` 两次，模型反复撞墙 | `AttemptLedger.record(technical=...)`：渲染/校验/执行失败与"遮罩为空"只记 `tech_failures`，不计同手法次数；`check()` 只看"跑起来但没达标" | ✅ FIXED |
+| D30 | `Invalid image file` 没有专门的失败类 → 归到 UNKNOWN，模型不知道该修路径而不是换手法 | `policy.BAD_INPUT`（含修复动作、`may_rerender=True`、`download_helps=False`），归类顺序置于最前 | ✅ FIXED |
+| D31 | 遮罩为空（没定位到目标）时，"修复"其实什么都没改，交付却说"评估通过" | 空遮罩 → 记 note、按技术失败计、注入"不许当修复成功交付，请用户给遮罩/坐标" | ✅ FIXED |

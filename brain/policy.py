@@ -15,6 +15,7 @@ import re
 
 # 失败类别
 CONFIG = "config"            # 配置/鉴权：模型名错、key 错、地址错 → 停下告知
+BAD_INPUT = "bad_input"      # 输入文件没到位（不在 /input、路径不可达）→ 修路径后重试
 MISSING_ASSET = "missing_asset"    # 缺模型文件 → 解析/下载，绝不重绘
 MISSING_NODE = "missing_node"      # 缺节点/依赖 → 说明+替代链路，下载无用
 TRANSIENT = "transient"            # 瞬时网络/服务抖动 → 退避重试 1 次
@@ -26,6 +27,7 @@ UNKNOWN = "unknown"
 #: 每类失败允许的动作白名单（引擎与提示词共同遵守）
 ACTIONS: dict[str, list[str]] = {
     CONFIG: ["stop_and_tell_user", "fix_settings"],
+    BAD_INPUT: ["fix_input_path", "upload_first", "ask_user"],
     MISSING_ASSET: ["resolve_asset", "download_or_ask", "degrade"],
     MISSING_NODE: ["explain_missing_node", "use_alternative_route", "ask_user"],
     TRANSIENT: ["retry_once"],
@@ -36,6 +38,9 @@ ACTIONS: dict[str, list[str]] = {
 }
 
 _HINTS: list[tuple[str, str]] = [
+    # 输入文件没到位（先判：这类不是"生成失败"，修好路径就能跑）
+    (r"invalid image file|图片不存在|no such file|file not found|"
+     r"既不是本机文件", BAD_INPUT),
     # 配置/鉴权（先判：这类重试永远不会成功）
     (r"unknown model|model_not_available|invalid.*api.?key|unauthorized|401|"
      r"模型不可用|model_capability_not_supported|不支持该能力", CONFIG),
@@ -75,7 +80,8 @@ def policy_for(kind: str) -> dict:
     """该类失败允许的动作 + 一句给用户的说明口径。"""
     actions = ACTIONS.get(kind, ACTIONS[UNKNOWN])
     return {"kind": kind, "actions": actions,
-            "may_rerender": kind in (TRANSIENT,),
+            # 修好输入路径后重试同一步是正当的（这不是"生成失败"）
+            "may_rerender": kind in (TRANSIENT, BAD_INPUT),
             "must_change_method": kind == SEMANTIC,
             "download_helps": kind == MISSING_ASSET,
             "tell_user": kind in (CONFIG, MISSING_NODE, BUDGET, USER_INPUT)}
@@ -85,6 +91,9 @@ def describe(kind: str, detail: str = "") -> str:
     """统一口径的失败说明（避免"服务端临时问题"这类误诊）。"""
     table = {
         CONFIG: "接口/模型配置不对（重试无用）：请到 ⚙ 检查地址、Key 与模型名",
+        BAD_INPUT: "输入图没到位（不在 ComfyUI /input 或路径不可达）："
+                   "先用 upload_image 取 server_name，或直接给本机绝对路径，"
+                   "然后重试同一步（这不算生成失败）",
         MISSING_ASSET: "缺少模型文件：可搜索下载或换等价链路，不要重绘",
         MISSING_NODE: "缺的是**节点或依赖**，不是模型：下载模型解决不了",
         TRANSIENT: "服务商瞬时故障：可退避重试一次",

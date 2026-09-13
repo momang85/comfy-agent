@@ -554,6 +554,25 @@ function showWarning(text) {
   warnTimer = setTimeout(() => el.classList.add("hidden"), 12000);
 }
 
+// 引擎代码已更新但服务没重启：这条提示**不自动消失**，并且醒目用红色。
+// 项目 6 事故就是因为服务静默跑旧代码（新增的输入声明没生效 → 连续工具失败）
+function showStaleCodeWarning(on) {
+  const el = document.getElementById("warnline");
+  if (!el) return;
+  if (!on) { el.classList.add("hidden"); return; }
+  el.textContent = "⚠ 引擎代码已更新，当前服务在跑旧代码：请重启（一键启动.bat）";
+  el.style.cssText = "color:#ff6b6b;font-size:12px;font-weight:600;" +
+    "max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap";
+  el.classList.remove("hidden");
+  if (warnTimer) clearTimeout(warnTimer);
+  warnTimer = null;          // 不自动隐藏
+}
+
+function applyStaleFlag(st) {
+  if (!st) return;
+  if (st.stale_code === true || st.stale === true) showStaleCodeWarning(true);
+}
+
 function addEvalCard(ev) {
   const html = renderEvalCard(ev);
   // 同一 prompt_id 只保留一张评估卡（引擎强制评估 + 大脑 view_* 会重复上报）
@@ -787,6 +806,7 @@ function healthCheck() {
         .then((st) => {
           if (st.draft) renderGraph(st.draft);
           if (st.stage) setStage(st.stage);
+          applyStaleFlag(st);
         })
         .catch(() => {});
     }
@@ -1051,5 +1071,6 @@ async function refreshVisionNote() {
   if (st.draft) renderGraph(st.draft);
   if (st.outputs) renderGallery(st.outputs);
   if (st.stage) setStage(st.stage);
+  applyStaleFlag(st);
   refreshModelDownloads();
 })();

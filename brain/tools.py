@@ -415,6 +415,16 @@ def _resolve_upload(ctx: ToolContext, raw: str) -> Path | None:
     for f in _upload_candidates(ctx):
         if f.name == name:
             return f
+    # 产物里的图也允许按**精确文件名**引用（跨轮产物目录同样搜）——
+    # 大脑经常直接写上一轮的产物名，此前只在 uploads/ 里找，必然报"图片不存在"
+    try:
+        if ctx.project is not None:
+            root = ctx.project.outputs_dir()
+            hit = next((f for f in root.rglob(name) if f.is_file()), None)
+            if hit is not None:
+                return hit
+    except Exception:
+        pass
     return None
 
 

@@ -140,10 +140,28 @@ class AttemptLedger:
         self.signature_counts: dict[tuple, int] = {}
         self.refusals: dict[tuple, int] = {}
         self.used_modes: set[str] = set()
+        #: 技术失败次数（没跑起来），不参与同手法额度
+        self.tech_failures: int = 0
 
     def record(self, signature: tuple, params: dict, result: dict,
                score: float | None = None, verdict: bool | None = None,
-               reason: str = "") -> None:
+               reason: str = "", technical: bool = False) -> None:
+        """记账。
+
+        technical=True 表示这次**根本没跑起来**（渲染/校验/执行失败、缺依赖等）：
+        只记技术失败，**不消耗同手法的重掷额度** —— 否则两次配置性失败就会把
+        手法锁死，模型只能反复撞墙（项目 6 实证：两次 Invalid image file 之后，
+        同一手法被连续拒绝 2 次）。
+        """
+        if technical:
+            self.tech_failures += 1
+            self.attempts.append({
+                "ts": time.time(), "signature": signature, "count": 0,
+                "score": None, "verdict": None, "reason": reason,
+                "ok": False, "stage": (result or {}).get("stage"),
+                "technical": True,
+            })
+            return
         self.signature_counts[signature] = \
             self.signature_counts.get(signature, 0) + 1
         self.used_modes.add(signature[2] if len(signature) > 2 else "global")
@@ -155,7 +173,18 @@ class AttemptLedger:
             "denoise": (params or {}).get("denoise"),
             "ok": bool((result or {}).get("ok")),
             "stage": (result or {}).get("stage"),
+            "technical": False,
         })
+
+    @staticmethod
+    def is_technical(result: dict) -> bool:
+        """是不是"没跑起来"的技术失败（与"跑了但没达标"区分开）。"""
+        r = result or {}
+        if r.get("exec_error"):
+            return True
+        stage = str(r.get("stage") or "")
+        return stage in ("render_failed", "validation_failed",
+                         "repair_failed", "execution_failed")
 
     def check(self, signature: tuple) -> dict:
         """执行前的闸门：允许 / 要求换手法 / 拒绝。
@@ -212,7 +241,8 @@ class AttemptLedger:
     def to_dict(self) -> dict:
         return {"attempts": [{k: (list(v) if isinstance(v, tuple) else v)
                               for k, v in a.items()} for a in self.attempts],
-                "modes": sorted(self.used_modes)}
+                "modes": sorted(self.used_modes),
+                "tech_failures": self.tech_failures}
 
 
 class TaskState:
