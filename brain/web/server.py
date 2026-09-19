@@ -373,9 +373,12 @@ def status_snapshot(project_id: str | None) -> dict:
     out_root = bs.project.outputs_dir()
     outputs = []
     if out_root.exists():
+        from comfy_agent.runner import is_aux_output
         files = [f for f in out_root.rglob("*") if f.is_file()
                  and f.suffix.lower() in
-                 (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm")]
+                 (".png", ".jpg", ".jpeg", ".webp", ".mp4", ".webm")
+                 # 遮罩预览等辅助产物不进画廊（文件保留在磁盘，调试用）
+                 and not is_aux_output({"filename": f.name})]
         files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
         now = time.time()
         for f in files[:32]:
@@ -752,6 +755,22 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class QuietHTTPServer(ThreadingHTTPServer):
+    """静默处理客户端断开类异常（SSE 关闭/刷新/网络抖动）：
+    这些堆栈会把日志刷得像崩溃（实测一大片 WinError 10053），
+    真正的程序错误仍会打印。"""
+
+    def handle_error(self, request, client_address):
+        import sys
+        et, ev, _tb = sys.exc_info()
+        transient = (ConnectionResetError, ConnectionAbortedError,
+                     BrokenPipeError, TimeoutError)
+        if isinstance(ev, (ConnectionError, TimeoutError, OSError)) \
+                and not isinstance(ev, FileNotFoundError):
+            return          # 客户端断开是常态，不是错误
+        super().handle_error(request, client_address)
+
+
 def serve(port: int = PORT, open_browser: bool = True):
     global SESSION
     SESSION = WebSession()
@@ -765,7 +784,7 @@ def serve(port: int = PORT, open_browser: bool = True):
         pidfile.write_text(str(os.getpid()), encoding="ascii")
     except OSError:
         pass
-    httpd = ThreadingHTTPServer((HOST, port), Handler)
+    httpd = QuietHTTPServer((HOST, port), Handler)
     url = f"http://{HOST}:{port}"
     print(f"ComfyUI 大脑 Web UI: {url}（Ctrl+C 退出）")
     if open_browser:

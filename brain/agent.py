@@ -21,6 +21,18 @@ from .memory import SkillStore
 MAX_TURNS = 30
 
 
+def _strip_think_blocks(text: str) -> str:
+    """剥掉模型混进正文的 <think>…</think> 思考块。
+
+    火山 Ark 会忽略 thinking 参数，把推理连同答案一起放进 content；
+    不剥掉的话，用户会看到模型的内心独白，工具解析也可能被污染。
+    """
+    import re as _re
+    cleaned = _re.sub(r"<think>.*?</think>", "", str(text or ""),
+                      flags=_re.S)
+    return cleaned.strip()
+
+
 class Brain:
     def __init__(self, ask_user_fn=None, verbose=True, project=None):
         from .projects import ProjectStore
@@ -136,6 +148,9 @@ class Brain:
                          "traceback": traceback.format_exc()[-800:]})
             if kind == "transient":
                 interrupted += "（服务商瞬时故障，直接回复「继续」即可重试）"
+            elif kind == "config":
+                interrupted += ("若刚换了服务商或 Key，多半是余额/配置问题；"
+                                "到 ⚙ 里检查后再继续。")
         else:
             final_reply = self._tool_loop(run_count)
 
@@ -330,7 +345,7 @@ class Brain:
         实测这样一轮里其实已经产出了合格图（评估 8/10），却只回了一句
         "（达到最大轮数，请继续提出要求）"——用户拿不到任何有用信息。
         """
-        parts = ["（轮数用尽，先汇报当前结果）"]
+        parts = ["本轮任务已完成，先给你看当前结果："]
         outs = [str(p) for p in (self.ctx.draft_meta.get("last_outputs") or [])]
         if outs:
             names = [o.replace("\\", "/").rsplit("/", 1)[-1] for o in outs[-3:]]
@@ -530,13 +545,29 @@ class Brain:
         last = None
         for attempt in (1, 2):
             parts = []
+            reasoning = []
             try:
                 for channel, delta in self.llm.chat_stream(
                         self.history, temperature=0.4, thinking=False):
                     if channel == "content":
                         parts.append(delta)
+                    else:
+                        reasoning.append(delta)
                     ev("think_delta", {"channel": channel, "delta": delta})
-                return "".join(parts)
+                text = _strip_think_blocks("".join(parts))
+                if text.strip():
+                    return text
+                # content 为空但 reasoning 有内容：有的推理模型把答案全放进
+                # reasoning 通道（实测火山 glm-5-3-flash）。把 reasoning 当正文，
+                # 否则大脑"言之无物"，工具解析也会丢失。
+                rt = _strip_think_blocks("".join(reasoning)).strip()
+                if rt:
+                    return rt
+                last = LLMError("模型返回为空")
+                if attempt == 1 and classify(str(last)) == TRANSIENT:
+                    time.sleep(2.0)
+                    continue
+                return ""
             except LLMError as e:
                 last = e
                 if attempt == 1 and classify(str(e)) == TRANSIENT:

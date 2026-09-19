@@ -30,6 +30,13 @@ from .validate import validate_workflow, ValidationIssue
 MAX_DETERMINISTIC_ROUNDS = 3
 
 
+def is_aux_output(o: dict) -> bool:
+    """辅助产物判定（公开给 server/前端复用）：局部修复的遮罩预览等不是交付物。"""
+    name = str((o or {}).get("filename") or (o or {}).get("local_path") or "")
+    base = name.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return any(m in base for m in _AUX_MARKERS)
+
+
 def _verify_local_repair_mask(result: dict) -> None:
     """局部修复后核对遮罩"是否真的局部"。
 

@@ -89,7 +89,7 @@ def policy_for(kind: str) -> dict:
 
 def describe(kind: str, detail: str = "") -> str:
     """统一口径的失败说明（避免"服务端临时问题"这类误诊）。"""
-    table = {
+    base = {
         CONFIG: "接口/模型配置不对（重试无用）：请到 ⚙ 检查地址、Key 与模型名",
         BAD_INPUT: "输入图没到位（不在 ComfyUI /input 或路径不可达）："
                    "先用 upload_image 取 server_name，或直接给本机绝对路径，"
@@ -100,6 +100,14 @@ def describe(kind: str, detail: str = "") -> str:
         SEMANTIC: "执行成功但不满足要求：必须换手法，禁止只调参数重掷",
         BUDGET: "已达尝试/预算上限：停止并如实汇报现状",
         USER_INPUT: "需要用户输入（遮罩/文字描述/选择）才能继续",
-    }
-    base = table.get(kind, "未归类的失败：先查清原因再动手")
+    }.get(kind, "未归类的失败：先查清原因再动手")
+    # 配置类错误的常见子因，直接给下一步（新手看不懂 402/401 这类代码）
+    if kind == CONFIG:
+        low = detail.lower()
+        if "402" in low or "余额" in low or "balance" in low:
+            base = "服务商账户**余额不足**：请充值，或到 ⚙ 换一个可用的 API/Key"
+        elif "401" in low or "unauthorized" in low or "key" in low and "invalid" in low:
+            base = "API Key 无效或未授权：请到 ⚙ 检查 Key 是否正确/有效"
+        elif "404" in low or "not found" in low or "unknown model" in low:
+            base = "模型名或地址不对：请到 ⚙ 检查模型名与 API 地址"
     return f"{base}{('（' + detail[:120] + '）') if detail else ''}"

@@ -437,6 +437,19 @@ def tool_analyze_image(ctx: ToolContext, args: dict) -> dict:
     if not raw and cur:
         p = Path(cur)
         source = "本轮上传"
+    elif not raw:
+        # 没传 path、本轮也没有上传：回退分析**最近一次产物**（新手常直接说
+        # "修一下这张"，指的就是刚生成的那张）；找不到才报错
+        try:
+            root = ctx.project.outputs_dir()
+            cands = [f for f in root.rglob("*") if f.is_file()
+                     and f.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
+                     and "mask" not in f.name.lower()]
+            cands.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+            p = cands[0] if cands else None
+            source = "最近产物" if p else None
+        except Exception:
+            p, source = None, None
     else:
         p = _resolve_upload(ctx, raw)
         source = "指定路径"
@@ -447,7 +460,8 @@ def tool_analyze_image(ctx: ToolContext, args: dict) -> dict:
         return {"ok": False, "error": f"图片不存在: {raw or cur or '(未提供)'}。{hint}",
                 "hint": ("不要改用别的图片。若用户本轮刚上传了图，"
                          "不传 path 直接调用本工具即分析那张；"
-                         "若路径抄错，请照上面的真实文件名重试一次")}
+                         "若要分析上一轮产物，用 list_outputs 拿真实文件名再传；"
+                         "若路径抄错，请照真实文件名重试一次")}
     try:
         vlm = VLMClient()
         if not vlm.ready:

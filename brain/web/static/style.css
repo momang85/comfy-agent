@@ -170,3 +170,10 @@ body {
 .barwrap { height: 8px; background: var(--panel2); border: 1px solid #2c3548;
   border-radius: 5px; overflow: hidden; }
 .bar { height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+
+/* 顶栏收紧：1280px 宽度下不再换行（实测加按钮后 brand 与按钮会折行） */
+#topbar { gap: 6px; padding: 0 10px; }
+#topbar .brand { font-size: 14px; white-space: nowrap; flex-shrink: 0; }
+#topbar button { padding: 4px 9px; font-size: 12px; white-space: nowrap; flex-shrink: 0; }
+#topbar select { max-width: 150px; }
+#stagebar .stage { padding: 3px 7px; font-size: 11px; }

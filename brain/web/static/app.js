@@ -73,18 +73,36 @@ async function switchProject(pid) {
 }
 
 $("#newproject").addEventListener("click", async () => {
-  const name = prompt("新项目名称：");
-  if (!name || !name.trim()) return;
-  const r = await fetch("/api/projects", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name: name.trim() }),
-  });
-  const d = await r.json();
-  if (d.ok) {
-    await loadProjects();
-    switchProject(d.project.id);
+  // 应用内输入框替代原生 prompt()：风格统一且自动化可测
+  $("#np_name").value = "";
+  $("#newprojectmodal").classList.remove("hidden");
+  $("#np_name").focus();
+});
+$("#np_cancel").addEventListener("click", () =>
+  $("#newprojectmodal").classList.add("hidden"));
+$("#np_ok").addEventListener("click", async () => {
+  const name = $("#np_name").value.trim();
+  if (!name) { $("#np_name").focus(); return; }
+  try {
+    const r = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      $("#newprojectmodal").classList.add("hidden");
+      await loadProjects();
+      switchProject(d.project.id);
+    } else {
+      statusEl.textContent = "创建失败：" + (d.error || "未知原因");
+    }
+  } catch (e) {
+    statusEl.textContent = "创建请求失败";
   }
+});
+$("#np_name").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); $("#np_ok").click(); }
 });
 
 projectSel.addEventListener("change", () => switchProject(projectSel.value));
@@ -144,11 +162,15 @@ document.addEventListener("paste", (e) => {
 
 // ---------- 画廊 ----------
 async function refreshGallery() {
+  // 竞态防护：记录发起时的项目，响应回来时若已切走就丢弃
+  // （实测切项目时旧请求晚到，会把上一项目的产物画进新项目画廊）
   if (!activeProject) return;
+  const pid = activeProject.id;
   try {
     const r = await fetch("/api/status?project=" +
-                          encodeURIComponent(activeProject.id));
+                          encodeURIComponent(pid));
     const st = await r.json();
+    if (!activeProject || activeProject.id !== pid) return;
     renderGallery(st.outputs || []);
   } catch (e) { /* 后端未就绪 */ }
 }
@@ -921,7 +943,10 @@ function showModelDownload(rec) {
     close.classList.remove("hidden");
     prog.classList.add("hidden");
     const msg = rec.state === "done"
-      ? "✅ 下载完成，正在自动重跑刚才失败的任务…"
+      ? ("✅ 下载完成" +
+         (rec.retry && rec.retry.from_missing_model
+          ? "，正在自动重跑刚才失败的任务…"
+          : "，模型已就绪"))
       : rec.state === "declined" ? "已拒绝下载，大脑会按缺模型降级处理。"
       : rec.state === "canceled" ? "已取消下载（临时文件已清理）。"
       : `❌ 下载失败：${rec.error || "未知原因"}。大脑会按缺模型降级处理。`;

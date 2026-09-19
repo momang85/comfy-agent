@@ -93,3 +93,29 @@
 - 下载弹窗的"加载节点"行、中性系统消息、世界清单自动刷新；
 - 局部修复的区域外 0 像素改动（hand 1.18% / face 1.81% / 链式第二次也成立）；
 - view_image 复用引擎评估（不重复烧 VLM）。
+
+
+## 修复跟进（2026-09-13 晚，走查发现的问题已全部处理）
+
+| # | 修复 | 状态 |
+|---|---|---|
+| ① | 切项目画廊竞态：`refreshGallery` 记录发起时项目，响应回来时若已切走则丢弃 | ✅ FIXED |
+| ② | 交付兜底文案改为「本轮任务已完成，先给你看当前结果：」 | ✅ FIXED |
+| ③ | 遮罩预览不进画廊：`status_snapshot` 过滤辅助产物（复用 `runner.is_aux_output`） | ✅ FIXED（实测项目 6 画廊 5→3 张） |
+| ④ | 下载完成弹窗文案按有无重跑前提区分 | ✅ FIXED |
+| ⑤ | 402/401 友好化：`policy.describe` 对余额不足/Key 无效给出明确下一步 | ✅ FIXED |
+| ⑥ | `analyze_image` 无 path 且无上传 → 回退分析最近一次产物（标注"最近产物"） | ✅ FIXED |
+| ⑦ | ＋新建项目改为应用内模态（含名称输入/创建/取消，Enter 提交） | ✅ FIXED |
+| ⑧ | 顶栏 CSS 收紧，1280px 不再换行 | ✅ FIXED |
+| ⑨ | `QuietHTTPServer` 静默 SSE 断开类异常，日志不再刷 WinError 10053 堆栈 | ✅ FIXED |
+
+### 换用火山 Key 后新发现的两个适配问题（已修）
+
+- **推理模型 content 为空**：火山 `glm-5-3-flash-260828` 把回答放进 `reasoning_content`、
+  `content` 留空（实测间歇性）→ 大脑会拿到空回复走兜底。已在 `_chat_streamed` 加回退：
+  content 为空时用 reasoning 文本当正文。
+- **`<think>` 标签混进 content**：Ark 忽略 thinking 参数，推理以 `<think>…</think>` 内联在
+  content 里 → 用户会看到模型内心独白。已在最终回复剥除 think 块（流式过程仍可见，属"思考
+  过程"展示）。要彻底干净需换非推理模型或等 Ark 支持 thinking 参数。
+- 另：`doubao-vision-*` 系列在该账户下未开通端点（404）；`glm-5-3-flash-260828` 本身可看图，
+  大脑与视觉共用即可。
