@@ -1,0 +1,2 @@
+# comfy-agent runs on the Python standard library only — no third-party dependencies.
+# ComfyUI-Manager installs this file with pip; it is intentionally empty of packages.

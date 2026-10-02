@@ -1,0 +1,17 @@
+[project]
+name = "comfy-agent"
+version = "0.3.0"
+description = "Natural-language chat engine for your local ComfyUI: build prompts, validate, execute, evaluate with VLM, auto-repair — BYOK (any OpenAI-compatible API or local Ollama). Pure standard library."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+dependencies = []  # 零第三方依赖：引擎与大脑全部使用 Python 标准库
+
+[project.urls]
+Repository = "https://github.com/momang85/comfy-agent"
+
+[tool.comfy]
+PublisherId = "momang85"
+DisplayName = "ComfyAgent (chat UI for ComfyUI)"
+Icon = ""
+includes = []

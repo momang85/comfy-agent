@@ -9,24 +9,36 @@ import tempfile
 from pathlib import Path
 
 
-def _find_tool(name: str, env_key: str, win_default: str) -> str:
-    """查找链：环境变量 -> PATH（跨平台）-> Windows 默认位置（仅 Windows）。"""
+def _win_fallback(name: str) -> str:
+    """PATH 找不到时逐个探测 Windows 常见安装位置；都没有就交回上层报错。"""
+    for base in (
+        r"C:\ffmpeg\bin", r"D:\ffmpeg\bin",
+        r"C:\Program Files\ffmpeg\bin", r"D:\Program Files\ffmpeg\bin",
+        r"D:\ffmpeg-master-latest-win64-gpl-shared\bin",
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "ffmpeg", "bin"),
+    ):
+        cand = os.path.join(base, f"{name}.exe")
+        if os.path.isfile(cand):
+            return cand
+    return name
+
+
+def _find_tool(name: str, env_key: str) -> str:
+    """查找链：环境变量 -> PATH（跨平台）-> Windows 常见位置（仅 Windows）。"""
     env_val = os.environ.get(env_key)
     if env_val:
         return env_val
     found = shutil.which(name)
     if found:
         return found
-    # 末位兜底只对 Windows 有效（整合包路径）；POSIX 交给 which 的 PATH
+    # POSIX 交给 which 的 PATH；Windows 兜底探测常见安装位置
     if os.name == "nt":
-        return win_default
+        return _win_fallback(name)
     return name
 
 
-FFMPEG = _find_tool("ffmpeg", "FFMPEG_PATH",
-                    r"D:\ffmpeg-master-latest-win64-gpl-shared\bin\ffmpeg.exe")
-FFPROBE = _find_tool("ffprobe", "FFPROBE_PATH",
-                     r"D:\ffmpeg-master-latest-win64-gpl-shared\bin\ffprobe.exe")
+FFMPEG = _find_tool("ffmpeg", "FFMPEG_PATH")
+FFPROBE = _find_tool("ffprobe", "FFPROBE_PATH")
 
 ALLOWED_EXTS = (".mp4", ".webm", ".mkv", ".mov", ".avi", ".gif")
 

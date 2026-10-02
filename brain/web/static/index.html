@@ -8,24 +8,25 @@
 </head>
 <body>
 <header id="topbar">
-  <div class="brand">🧠 ComfyUI 大脑</div>
-  <select id="projectsel" title="切换项目（上下文完全隔离）"></select>
-  <button id="newproject" title="新建项目">＋新建项目</button>
+  <div class="brand" data-i18n="🧠 ComfyUI 大脑">🧠 ComfyUI 大脑</div>
+  <select id="projectsel" data-i18n-title="切换项目（上下文完全隔离）" title="切换项目（上下文完全隔离）"></select>
+  <button id="newproject" data-i18n="＋新建项目" data-i18n-title="新建项目" title="新建项目">＋新建项目</button>
   <div id="stagebar" class="stagebar">
-    <span class="stage" data-s="validate">校验</span>
-    <span class="stage" data-s="repair">修复</span>
-    <span class="stage" data-s="submit">提交</span>
-    <span class="stage" data-s="run">执行</span>
-    <span class="stage" data-s="download">下载</span>
-    <span class="stage" data-s="evaluate">评估</span>
+    <span class="stage" data-s="validate" data-i18n="校验">校验</span>
+    <span class="stage" data-s="repair" data-i18n="修复">修复</span>
+    <span class="stage" data-s="submit" data-i18n="提交">提交</span>
+    <span class="stage" data-s="run" data-i18n="执行">执行</span>
+    <span class="stage" data-s="download" data-i18n="下载">下载</span>
+    <span class="stage" data-s="evaluate" data-i18n="评估">评估</span>
   </div>
-  <div id="statusline">空闲</div>
+  <div id="statusline" data-i18n="空闲">空闲</div>
   <div id="warnline" class="hidden"></div>
-  <div id="vram" class="vram" title="GPU 显存">GPU --</div>
-  <div id="queue" class="queue">队列 --</div>
-  <button id="stopbtn" title="中断当前任务">■ 停止</button>
-  <button id="refreshworld" title="重扫本机节点与模型清单（刚下载模型/装了节点后点这里）">⟳</button>
-  <button id="settingsbtn" title="大脑 API 设置">⚙</button>
+  <div id="vram" class="vram" data-i18n-title="GPU 显存" title="GPU 显存">GPU --</div>
+  <div id="queue" class="queue" data-i18n="队列 --">队列 --</div>
+  <button id="stopbtn" data-i18n="■ 停止" data-i18n-title="中断当前任务" title="中断当前任务">■ 停止</button>
+  <button id="refreshworld" data-i18n-title="重扫本机节点与模型清单（刚下载模型/装了节点后点这里）" title="重扫本机节点与模型清单（刚下载模型/装了节点后点这里）">⟳</button>
+  <button id="langbtn" title="切换界面语言 / Switch language">EN</button>
+  <button id="settingsbtn" data-i18n-title="大脑 API 设置" title="大脑 API 设置">⚙</button>
 </header>
 
 <main id="layout">
@@ -33,37 +34,38 @@
     <div id="chat" class="chat"></div>
     <div id="attachbar" class="attachbar hidden"></div>
     <form id="inputform" autocomplete="off">
-      <button type="button" id="attachbtn" title="添加图片（支持拖拽/粘贴，单张）">📎</button>
+      <button type="button" id="attachbtn" data-i18n-title="添加图片（支持拖拽/粘贴，单张）" title="添加图片（支持拖拽/粘贴，单张）">📎</button>
       <input id="input" type="text"
+             data-i18n-placeholder="用自然语言描述需求，可附图片做图生图/改图"
              placeholder="用自然语言描述需求，可附图片做图生图/改图">
       <input type="file" id="fileinput" accept="image/png,image/jpeg,image/webp" hidden>
-      <button type="submit">发送</button>
+      <button type="submit" data-i18n="发送">发送</button>
     </form>
   </aside>
 
   <section id="graphpane" class="pane">
-    <div class="pane-title">工作流 <span id="graphmeta"></span></div>
+    <div class="pane-title"><span data-i18n="工作流">工作流</span> <span id="graphmeta"></span></div>
     <div id="graphwrap">
       <svg id="graph" xmlns="http://www.w3.org/2000/svg"></svg>
-      <div id="graphempty">还没有工作流。发送任务后，AI 构建的工作流会实时显示在这里。</div>
+      <div id="graphempty" data-i18n="还没有工作流。发送任务后，AI 构建的工作流会实时显示在这里。">还没有工作流。发送任务后，AI 构建的工作流会实时显示在这里。</div>
     </div>
     <div id="graphtools">
-      <button id="gz-in" title="放大">＋</button>
-      <button id="gz-out" title="缩小">－</button>
-      <button id="gz-fit" title="适配窗口">⤢</button>
-      <button id="gz-reset" title="重置视图">⟲</button>
-      <span id="gz-hint">滚轮缩放 · 拖拽平移 · 双击复位</span>
+      <button id="gz-in" data-i18n-title="放大" title="放大">＋</button>
+      <button id="gz-out" data-i18n-title="缩小" title="缩小">－</button>
+      <button id="gz-fit" data-i18n-title="适配窗口" title="适配窗口">⤢</button>
+      <button id="gz-reset" data-i18n-title="重置视图" title="重置视图">⟲</button>
+      <span id="gz-hint" data-i18n="滚轮缩放 · 拖拽平移 · 双击复位">滚轮缩放 · 拖拽平移 · 双击复位</span>
     </div>
   </section>
 
   <aside id="detailpane" class="pane">
-    <div class="pane-title">详情</div>
+    <div class="pane-title" data-i18n="详情">详情</div>
     <div id="details">
       <div id="nodedetail" class="card hidden"></div>
       <div id="evals"></div>
       <div id="memory"></div>
     </div>
-    <div class="pane-title">产物</div>
+    <div class="pane-title" data-i18n="产物">产物</div>
     <div id="gallery" class="gallery"></div>
   </aside>
 </main>
@@ -72,48 +74,48 @@
 
 <div id="newprojectmodal" class="modal hidden">
   <div class="modal-box">
-    <h3>新建项目</h3>
-    <label>项目名称 <input id="np_name" maxlength="40" placeholder="例如：头像批量出图"></label>
-    <div class="modal-note">项目之间上下文完全隔离（对话/记忆/产物各自独立）。</div>
+    <h3 data-i18n="新建项目">新建项目</h3>
+    <label><span data-i18n="项目名称">项目名称</span> <input id="np_name" maxlength="40" data-i18n-placeholder="例如：头像批量出图" placeholder="例如：头像批量出图"></label>
+    <div class="modal-note" data-i18n="项目之间上下文完全隔离（对话/记忆/产物各自独立）。">项目之间上下文完全隔离（对话/记忆/产物各自独立）。</div>
     <div class="modal-actions">
-      <button id="np_ok">创建</button>
-      <button id="np_cancel">取消</button>
+      <button id="np_ok" data-i18n="创建">创建</button>
+      <button id="np_cancel" data-i18n="取消">取消</button>
     </div>
   </div>
 </div>
 
 <div id="modeldlmodal" class="modal hidden">
   <div class="modal-box">
-    <h3>缺失模型下载</h3>
+    <h3 data-i18n="缺失模型下载">缺失模型下载</h3>
     <div id="mdl_body"></div>
     <div id="mdl_progress" class="mdl-progress hidden">
       <div class="barwrap"><div id="mdl_bar" class="bar"></div></div>
       <div id="mdl_stat" class="modal-note"></div>
     </div>
     <div class="modal-actions">
-      <button id="mdl_ok">下载</button>
-      <button id="mdl_no">不下载</button>
-      <button id="mdl_cancel" class="hidden">取消下载</button>
-      <button id="mdl_close" class="hidden">关闭</button>
+      <button id="mdl_ok" data-i18n="下载">下载</button>
+      <button id="mdl_no" data-i18n="不下载">不下载</button>
+      <button id="mdl_cancel" class="hidden" data-i18n="取消下载">取消下载</button>
+      <button id="mdl_close" class="hidden" data-i18n="关闭">关闭</button>
     </div>
   </div>
 </div>
 
 <div id="settingsmodal" class="modal hidden">
   <div class="modal-box">
-    <h3>大脑 API 设置</h3>
-    <label>API 地址 <input id="set_base" placeholder="https://api.z.ai/api/paas/v4"></label>
-    <label>API Key <input id="set_key" type="password" placeholder="sk-..." autocomplete="off">
-      <button type="button" id="set_key_toggle" class="mini">显示</button></label>
-    <label>大脑模型 <input id="set_model" placeholder="glm-4.5-air"></label>
-    <label>视觉模型 <input id="set_vmodel" placeholder="必须支持视觉，如 glm-4.6v / qwen-vl-max"></label>
-    <div class="modal-note" id="set_vision_note">视觉地址与 Key 默认跟随大脑。</div>
-    <label>视觉 API 地址（可选） <input id="set_vbase" placeholder="留空 = 跟随大脑"></label>
-    <label>视觉 Key（可选） <input id="set_vkey" type="password" placeholder="留空 = 跟随大脑" autocomplete="off"></label>
-    <div class="modal-note">Key 仅保存在本机 .comfy-agent/settings.json（不入 git）。与大脑模型同 key 时视觉 key 留空即可。多数 provider 的视觉模型名与文本模型不同，必须单独填。</div>
+    <h3 data-i18n="大脑 API 设置">大脑 API 设置</h3>
+    <label><span data-i18n="API 地址">API 地址</span> <input id="set_base" placeholder="https://api.z.ai/api/paas/v4"></label>
+    <label><span data-i18n="API Key">API Key</span> <input id="set_key" type="password" placeholder="sk-..." autocomplete="off">
+      <button type="button" id="set_key_toggle" class="mini" data-i18n="显示">显示</button></label>
+    <label><span data-i18n="大脑模型">大脑模型</span> <input id="set_model" placeholder="glm-4.5-air"></label>
+    <label><span data-i18n="视觉模型">视觉模型</span> <input id="set_vmodel" data-i18n-placeholder="必须支持视觉，如 glm-4.6v / qwen-vl-max" placeholder="必须支持视觉，如 glm-4.6v / qwen-vl-max"></label>
+    <div class="modal-note" id="set_vision_note" data-i18n="视觉地址与 Key 默认跟随大脑。">视觉地址与 Key 默认跟随大脑。</div>
+    <label><span data-i18n="视觉 API 地址（可选）">视觉 API 地址（可选）</span> <input id="set_vbase" data-i18n-placeholder="留空 = 跟随大脑" placeholder="留空 = 跟随大脑"></label>
+    <label><span data-i18n="视觉 Key（可选）">视觉 Key（可选）</span> <input id="set_vkey" type="password" data-i18n-placeholder="留空 = 跟随大脑" placeholder="留空 = 跟随大脑" autocomplete="off"></label>
+    <div class="modal-note" data-i18n="Key 仅保存在本机 .comfy-agent/settings.json（不入 git）。与大脑模型同 key 时视觉 key 留空即可。多数 provider 的视觉模型名与文本模型不同，必须单独填。">Key 仅保存在本机 .comfy-agent/settings.json（不入 git）。与大脑模型同 key 时视觉 key 留空即可。多数 provider 的视觉模型名与文本模型不同，必须单独填。</div>
     <div class="modal-actions">
-      <button id="set_save">保存</button>
-      <button id="set_close">关闭</button>
+      <button id="set_save" data-i18n="保存">保存</button>
+      <button id="set_close" data-i18n="关闭">关闭</button>
     </div>
   </div>
 </div>
