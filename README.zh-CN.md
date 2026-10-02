@@ -42,6 +42,20 @@ git clone https://github.com/momang85/comfy-agent     # 重启 ComfyUI
 
 画布加 **ComfyAgent Bridge** 节点跑一次：自动拉起聊天 UI 并输出地址（Agent 以独立进程运行，崩溃不拖垮 ComfyUI）。Registry 发布步骤见 [docs/custom-node-registry.md](docs/custom-node-registry.md)。
 
+## 从 Claude Desktop / Cursor / Claude Code 里用（MCP）
+
+自带零依赖的 stdio **MCP server**（`scripts/mcp_server.py`）：客户端的 LLM 当大脑，引擎把
+`comfy_status / comfy_inspect / comfy_list_templates / comfy_run_template / comfy_run_workflow / comfy_upload_image / comfy_models`
+七个工具暴露出去——完整的「校验 → 修复 → 执行」闭环直接当工具调。
+
+```json
+{ "mcpServers": { "comfy-agent": {
+    "command": "python",
+    "args": ["<repo>/scripts/mcp_server.py"] } } }
+```
+
+各家客户端的具体配置与工具说明：[docs/mcp-server.md](docs/mcp-server.md)
+
 ## 一轮任务长什么样
 
 ```

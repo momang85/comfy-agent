@@ -44,6 +44,18 @@ git clone https://github.com/momang85/comfy-agent     # restart ComfyUI
 
 Then add the **ComfyAgent Bridge** node anywhere and run it once — it starts the chat UI and prints the URL. ([Registry publishing steps](docs/custom-node-registry.md))
 
+## Use from Claude Desktop / Cursor / Claude Code (MCP)
+
+comfy-agent ships a zero-dependency stdio **MCP server** (`scripts/mcp_server.py`): your MCP client's LLM becomes the brain, and the engine exposes `comfy_status / comfy_inspect / comfy_list_templates / comfy_run_template / comfy_run_workflow / comfy_upload_image / comfy_models` — the full validate → repair → execute loop as tools.
+
+```json
+{ "mcpServers": { "comfy-agent": {
+    "command": "python",
+    "args": ["<repo>/scripts/mcp_server.py"] } } }
+```
+
+Details and per-client setup: [docs/mcp-server.md](docs/mcp-server.md)
+
 ## What a turn looks like
 
 ```
