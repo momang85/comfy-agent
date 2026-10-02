@@ -9,14 +9,52 @@ COMFY_URL = os.environ.get("COMFY_URL", "http://127.0.0.1:8188").rstrip("/")
 COMFY_ALLOW_LAN = os.environ.get("COMFY_ALLOW_LAN", "0") == "1"
 
 # ---- 本机路径（跨设备可移植：环境变量 COMFY_ROOT 优先；未设置时按平台探测）----
+def _read_local_root(path: Path | None = None) -> str:
+    """读项目根的 comfy_root.local（install.bat / install.sh 写入的整合包根目录）。
+
+    没有它，直接跑 CLI / MCP server（不经 bat 启动脚本、无环境变量）的进程
+    就会落到写死的默认路径上——换机器即失效。"""
+    f = path or (Path(__file__).resolve().parent.parent / "comfy_root.local")
+    try:
+        if f.is_file():
+            for line in f.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if line:
+                    return line
+    except OSError:
+        pass
+    return ""
+
+
+# Windows 常见整合包位置（探测到第一个含 ComfyUI\main.py 的即用）
+_WIN_HINTS = (r"D:\comfiUI", r"C:\comfiUI", r"D:\ComfyUI", r"C:\ComfyUI",
+              r"D:\ComfyUI_windows_portable")
+
+
+def _probe_windows() -> str:
+    import glob
+    cands: list[str] = []
+    for base in _WIN_HINTS:
+        cands += sorted(glob.glob(os.path.join(base, "ComfyUI-aki*", "ComfyUI-aki*")),
+                        reverse=True)
+        cands.append(base)
+    for c in cands:
+        if os.path.isfile(os.path.join(c, "ComfyUI", "main.py")):
+            return c
+    return ""
+
+
 def _default_comfy_root() -> str:
     """无环境变量时的 ComfyUI 安装目录兜底。
 
-    核心生成流程走 COMFY_URL（HTTP 连 127.0.0.1:8188），本目录仅用于
-    读取 Manager 缓存（节点→包映射）等增强功能，不是硬依赖。"""
+    顺序：comfy_root.local（install.bat/脚本写入）→ 平台常见位置探测。
+    核心生成流程走 COMFY_URL（HTTP 连 127.0.0.1:8188），本目录用于读取
+    Manager 缓存、模型清单落盘兜底等增强功能。"""
+    local = _read_local_root()
+    if local:
+        return local
     if os.name == "nt":
-        # Windows 整合包常见位置（install.bat/一键启动.bat 写 comfy_root.local 覆盖）
-        return r"D:\comfiUI\ComfyUI-aki\ComfyUI-aki-v3\ComfyUI"
+        return _probe_windows()
     for cand in ("ComfyUI", "comfyui", "ComfyUI/ComfyUI"):
         p = Path.home() / cand
         if p.exists():

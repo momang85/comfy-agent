@@ -57,6 +57,20 @@ _INPUT_FOLDER_KEYWORDS = (
 )
 
 
+# 架构性文件输入：换文件 = 换模型语义。这类输入的模糊"替代文件"必须留空，
+# 由人工/大脑决定换什么（实测事故：陈旧快照把 qwen 文本编码器"修复"成了
+# minimax H3 的编码器——名字都带 qwen 但完全不是同一个模型）。
+_ARCH_CLASSES = {"UNETLoader", "UnetLoaderGGUF", "CLIPLoader", "DualCLIPLoader",
+                 "TripleCLIPLoader", "CheckpointLoaderSimple", "CheckpointLoader",
+                 "LTXAVTextEncoderLoader"}
+_ARCH_INPUTS = {"unet_name", "clip_name", "ckpt_name", "model_name",
+                "clip_name1", "clip_name2", "clip_name3"}
+
+
+def _is_arch_input(cls: str, input_name: str) -> bool:
+    return cls in _ARCH_CLASSES or str(input_name).lower() in _ARCH_INPUTS
+
+
 class ValidationIssue:
     def __init__(self, node_id: str, node_class: str, input_name: Optional[str],
                  kind: str, message: str, suggestion=None):
@@ -196,6 +210,9 @@ def validate_workflow(api: dict, knowledge: Knowledge) -> list[ValidationIssue]:
                         "LoadImage", "LoadImageMask", "LoadImageOutput")
                     if is_image_input:
                         suggestion = None
+                    elif is_file_enum and _is_arch_input(cls, name):
+                        # 架构性文件（unet/clip/checkpoint）：不自动换别的模型
+                        suggestion = None
                     elif is_file_enum:
                         # 建议值必须用清单**原始形态**（Windows 上是反斜杠）：
                         # 用归一化副本写回会被服务器再次拒收（实测死循环根因）
@@ -236,6 +253,12 @@ def validate_workflow(api: dict, knowledge: Knowledge) -> list[ValidationIssue]:
                                 issues.append(ValidationIssue(
                                     node_id, cls, name, "missing_file",
                                     f"{name}={val!r} 不在 {folder or 'input'} 清单中（运行时上传）",
+                                    suggestion=None))
+                            elif _is_arch_input(cls, name):
+                                issues.append(ValidationIssue(
+                                    node_id, cls, name, "missing_file",
+                                    f"{name}={val!r} 不在 {folder} 清单中"
+                                    "（架构性文件，不自动换用其它模型）",
                                     suggestion=None))
                             else:
                                 best = _closest_same_family(val_norm, names)

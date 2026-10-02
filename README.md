@@ -31,6 +31,8 @@
    - **macOS / Linux**: `./scripts/install.sh` → `./scripts/start.sh` (same ports).
 4. Type what you want: *"a cyberpunk orange cat wearing an astronaut helmet, 1024×1024, 4 images"*.
 
+> ComfyUI root resolution (works for CLI/MCP runs too, not just the launcher scripts): `COMFY_ROOT` env → `comfy_root.local` in the project root → common-install probing.
+
 ## Quickstart — BYOK
 
 ⚙ panel → API base URL + key + model. Works with any OpenAI-compatible service. Keys are stored only in local `.comfy-agent/settings.json` (gitignored; masked in the UI).

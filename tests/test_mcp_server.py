@@ -66,14 +66,19 @@ class ProtocolTests(unittest.TestCase):
         self.assertTrue(payload["ok"])
         self.assertTrue(any(t["id"] == "t2i" for t in payload["templates"]))
 
-    def test_tools_call_status_without_server_is_structured(self):
-        # ComfyUI 不在跑也必须结构化降级（连接拒绝是秒回的）
+    def test_tools_call_status_structured_either_way(self):
+        # 契约：不论 ComfyUI 在不在跑，都必须返回结构化结果（不是异常）——
+        # 不可达时给启动提示，可达时给 stats
         r = mcp_server.handle_message(rpc(6, "tools/call",
                                           {"name": "comfy_status",
                                            "arguments": {}}))
+        self.assertFalse(r["result"]["isError"])
         payload = json.loads(r["result"]["content"][0]["text"])
         self.assertIn("ok", payload)
-        self.assertIn("hint", payload)
+        if payload["ok"]:
+            self.assertTrue(payload.get("stats"))
+        else:
+            self.assertIn("hint", payload)
 
     def test_run_template_empty_id_rejected_before_network(self):
         r = mcp_server.handle_message(rpc(7, "tools/call",

@@ -283,4 +283,10 @@ def friendly_error_zh(err: dict) -> str:
             "cannot find the requested files" in low:
         return ("预处理器模型缺失：节点需要从 HuggingFace 下载模型但网络不可达。"
                 "建议换用不依赖外部下载的模板（如 i2i 而非 ControlNet 类模板）。")
+    # 实测（Qwen-Image 2.1 int8）：新版权重常先于 ComfyUI 核心更新——文件在盘上、
+    # 服务器也能枚举，但核心的架构检测/量化表不认识它。这不是文件损坏。
+    if "could not detect model type" in low:
+        return ("模型文件格式/版本比当前 ComfyUI 核心新，核心认不出它的架构"
+                "（常见于新模型的 int8/量化权重）：请更新 ComfyUI 核心后重试，"
+                "或改用与该版本匹配的模型文件；文件本身已在 models/ 中、无需重新下载。")
     return f"执行出错：{msg[:200]}"

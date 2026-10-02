@@ -29,6 +29,8 @@
    - **macOS / Linux**：`./scripts/install.sh` → `./scripts/start.sh`（端口相同）。
 4. 直接说人话：「画一只戴宇航头盔的赛博朋克橘猫，1024x1024，4 张」。
 
+> ComfyUI 目录解析顺序（**直接跑 CLI/MCP 也生效**，不依赖启动脚本）：环境变量 `COMFY_ROOT` → 项目根 `comfy_root.local` → 常见安装位置探测。
+
 ## 快速开始——BYOK
 
 ⚙ 面板 → API 地址 + Key + 模型名，保存即生效。Key 只存本机 `.comfy-agent/settings.json`（gitignored，界面只显示脱敏尾号）。
