@@ -7,6 +7,7 @@
   下载状态机（awaiting_confirm → downloading → done/failed/declined/canceled）
 以及大小解析与本机 Manager 目录候选解析（依赖本机缓存，缺失则跳过）。
 """
+import ipaddress
 import os
 import shutil
 import sys
@@ -58,15 +59,27 @@ class _Base(unittest.TestCase):
         (config.MODELS_DIR / "checkpoints").mkdir(parents=True)
         self._old_open = md._open_stream
         self._old_head = md._head_size
+        self._old_resolve = md._resolve_ips
         self._old_emitter = md._emitter
         self._old_hook = md._finish_hook
         md.bind_emitter(lambda *a: None)       # 测试不发事件、不导入 brain
         # 让任何"探测远端大小"的兜底路径都不出网（实测 size=0 时会 HEAD 真站）
         md._head_size = lambda url, timeout=20: 0
+        # DNS 也必须假解析：真实解析依赖本机网络状态（实测 Clash fake-ip 下
+        # huggingface.co → 198.18.x.x 保留段，被 SSRF 守卫正确拒绝 → 测试假红）。
+        # IP 字面量原样返回——安全测试（拒绝私网 IP）依赖它。
+        def _fake_resolve(host, port):
+            try:
+                ipaddress.ip_address(host)
+                return [host]
+            except ValueError:
+                return ["93.184.216.34"]
+        md._resolve_ips = _fake_resolve
 
     def tearDown(self):
         md._open_stream = self._old_open
         md._head_size = self._old_head
+        md._resolve_ips = self._old_resolve
         md._emitter = self._old_emitter
         md._finish_hook = self._old_hook
         config.COMFY_ROOT = self._old_root

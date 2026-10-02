@@ -155,6 +155,15 @@ def run_workflow(workflow_api: dict, *, source: str = "workflow",
     criteria：本轮任务的验收判据（来自任务契约），用于强制评估——不再用通用套话。"""
     client = client or Client()
     knowledge = knowledge or Knowledge.build()
+    # 校验前先按 TTL 对齐服务器现状：拿过期快照做"有没有这个模型/节点"的判断，
+    # 会把刚下载/刚安装的东西判成不存在（实测：新模型先被误拦，还差点被"修"
+    # 成另一个模型的同名字段）
+    ensure = getattr(knowledge, "ensure_fresh", None)
+    if callable(ensure):
+        try:
+            ensure()
+        except Exception:
+            pass
     # 可选自愈：ComfyUI 不可达且 AUTO_START_COMFY=1 时尽力拉起（默认关闭）
     alive = getattr(client, "is_alive", None)
     if callable(alive):

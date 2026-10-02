@@ -107,37 +107,57 @@ def validate_workflow(api: dict, knowledge: Knowledge) -> list[ValidationIssue]:
         info = knowledge.node_info(cls)
         if info is None:
             cands = [r["class"] for r in knowledge.find_nodes(cls, limit=3)]
+            rename = _closest_node_name(cls, cands)
             issues.append(ValidationIssue(
                 node_id, cls, None, "missing_node",
                 f"节点 {cls} 在本机不存在",
-                suggestion={"rename": cands[0]} if cands else None))
+                suggestion={"rename": rename} if rename else None))
             continue
 
         spec_all = dict(info.get("input", {}).get("required", {}))
         spec_all.update(info.get("input", {}).get("optional", {}))
 
-        # 动态输入（COMFY_AUTOGROW_V3）：object_info 里是模板名（如 images），
-        # 服务器实际接受 输入名.前缀+序号 命名（images.image0）——
-        # 模板名本身与序号形式都不算缺
-        dyn_prefixes = []
+        # 动态输入（COMFY_AUTOGROW_V3）：object_info 给的是模板——新版是显式的
+        # names（如 image_1…）+ min，旧版是 prefix。三种合法形态：整组 dict
+        # （空 {} = 一组都不接，官方模板即如此）、新版命名 outer.name、
+        # 旧版扁平 outer0 / outer.prefix0。
+        dyn_specs = []
         for name, spec in list(spec_all.items()):
             if _is_autogrow(spec):
-                tmpl = (spec[1] or {}).get("template", {})
-                dyn_prefixes.append((name, tmpl.get("prefix", name)))
+                tmpl = (spec[1] or {}).get("template", {}) or {}
+                dyn_specs.append({
+                    "outer": name,
+                    "prefix": str(tmpl.get("prefix") or name),
+                    "names": {str(x) for x in (tmpl.get("names") or [])},
+                    "min": int(tmpl.get("min") or 0),
+                })
         import re as _re
 
         def _is_dyn_name(n):
-            return any(_re.fullmatch(p + r"\d+", n) or
-                       _re.fullmatch(rf"{_re.escape(outer)}\.{_re.escape(p)}\d+", n)
-                       for outer, p in dyn_prefixes)
+            for d in dyn_specs:
+                if _re.fullmatch(_re.escape(d["prefix"]) + r"\d+", n):
+                    return True
+                if _re.fullmatch(_re.escape(d["outer"]) + r"\." +
+                                 _re.escape(d["prefix"]) + r"\d+", n):
+                    return True
+                if n in d["names"] or n.split(".", 1)[-1] in d["names"]:
+                    return True
+            return False
 
-        # 必填齐全（动态输入的模板名无需出现，其序号形式存在即可）
+        # 必填齐全（min=0 的动态组允许整组缺省）
         for name in info.get("input", {}).get("required", {}):
             if _is_autogrow(spec_all.get(name)):
-                if not any(_is_dyn_name(n) for n in inputs):
-                    issues.append(ValidationIssue(
-                        node_id, cls, name, "missing_input",
-                        f"缺少必填动态输入 {name}（需 {dyn_prefixes[0] if dyn_prefixes else '?'}0 等序号形式）"))
+                if isinstance(inputs.get(name), dict):
+                    continue                      # 整组 dict（含空 {}）：合法
+                d = next((x for x in dyn_specs if x["outer"] == name), None)
+                if any(_is_dyn_name(n) for n in inputs):
+                    continue                      # 命名/序号形态：合法
+                if d is not None and d["min"] <= 0:
+                    continue                      # min=0：不接也合法
+                issues.append(ValidationIssue(
+                    node_id, cls, name, "missing_input",
+                    f"缺少必填动态输入 {name}"
+                    f"（给 {{}} 表示空，或按其 names 命名，如 {name}.image_1）"))
                 continue
             if name not in inputs:
                 issues.append(ValidationIssue(
@@ -315,6 +335,20 @@ def _folder_of_input(knowledge: Knowledge, cls: str, input_name: str) -> Optiona
                 real = "clip" if folder == "clip" and "clip" not in knowledge.models and \
                     "text_encoders" in knowledge.models else folder
                 return real
+    return None
+
+
+def _closest_node_name(cls: str, cands: list[str],
+                       threshold: float = 0.75) -> Optional[str]:
+    """模糊候选里够像的才建议改名；不像就留空（宁可让人看到"不存在"）。
+
+    实测事故：QwenImage21Cache 被"重命名"成 WanVideoMagCache（只因为都含
+    Cache），随后一串必填输入缺失——比直接报"节点不存在"更误导。
+    """
+    from difflib import SequenceMatcher
+    for c in cands or []:
+        if SequenceMatcher(None, str(cls).lower(), str(c).lower()).ratio() >= threshold:
+            return c
     return None
 
 

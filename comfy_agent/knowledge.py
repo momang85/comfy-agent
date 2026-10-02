@@ -51,10 +51,28 @@ class Knowledge:
             models = client.models()
         except ComfyUIError:
             models = {}
+        # loaded_at 必须是快照的**真实抓取时间**：用"刚装载"当作新鲜，
+        # TTL 永远不会到期，ensure_fresh 就成了摆设（实测：核心升级后
+        # 新节点仍被判"本机不存在"）
         k = cls(snapshot, ext_map, models, client=client,
-                loaded_at=time.time())
+                loaded_at=cls._snapshot_fetched_at())
         k._models_mtime = k._current_models_mtime()
         return k
+
+    @classmethod
+    def _snapshot_fetched_at(cls) -> float:
+        """快照抓取时间：meta.fetched_at → 文件 mtime → 现在（无快照时）。"""
+        try:
+            meta = json.loads(SNAPSHOT_META_PATH.read_text(encoding="utf-8"))
+            ts = float(meta.get("fetched_at") or 0)
+            if ts > 0:
+                return ts
+        except Exception:
+            pass
+        try:
+            return os.path.getmtime(SNAPSHOT_PATH)
+        except OSError:
+            return time.time()
 
     # ---------- 新鲜度（世界会变：下载了模型、装了节点、改了设置） ----------
     @classmethod
