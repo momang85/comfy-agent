@@ -77,6 +77,72 @@ def _is_transient_error(text: str) -> bool:
                                "ssl", "timed out", "timeout", "connection reset"))
 
 
+_HTTP_ERROR_TITLES = {
+    400: ("请求被拒绝", "检查模型名与该服务是否支持请求里的参数（部分服务不支持 stream）。"),
+    401: ("API Key 无效或已过期", "到服务商后台重新生成 Key，再填进 ⚙ 设置。"),
+    403: ("没有该模型的访问权限", "Key 有效但未开通此模型，或受地区/配额限制。"),
+    404: ("接口或模型不存在", "检查 Base URL 是否以 /v1 结尾、模型名是否拼错。"),
+    413: ("请求体过大", "附带的图片太大，先压缩或换一张小的。"),
+    429: ("请求太频繁或额度用尽", "稍等重试；若是额度限制，给账户提额或换一个 Key。"),
+}
+
+
+def _parse_error_payload(detail: str) -> tuple[str, str]:
+    """从服务商的错误响应里取出 (code, message)；取不到就返回 ("", 原文)。
+
+    各家格式不一（OpenAI/火山/智谱/DeepSeek），但几乎都是
+    {"error": {"code": ..., "message": ...}}，也有把 error 直接写成字符串的。
+    """
+    text = (detail or "").strip()
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return "", text
+    if isinstance(data, dict):
+        err = data.get("error")
+        if isinstance(err, dict):
+            code = str(err.get("code") or err.get("type") or "")
+            msg = str(err.get("message") or "")
+            if msg:
+                return code, msg
+        if isinstance(err, str) and err:
+            return "", err
+        for key in ("message", "msg", "detail"):
+            val = data.get(key)
+            if isinstance(val, str) and val:
+                return "", val
+    return "", text
+
+
+def _clip_message(text: str, limit: int = 300) -> str:
+    """过长消息掐中间、留头尾：服务商的"怎么解决"往往写在最后一句。"""
+    if len(text) <= limit:
+        return text
+    head, tail = limit - 80, 60
+    return f"{text[:head]}…（省略 {len(text) - head - tail} 字）…{text[-tail:]}"
+
+
+def explain_http_error(code: int, detail: str) -> str:
+    """把服务商的 HTTP 错误翻译成人话：这是什么问题 + 该动哪里。
+
+    原始响应保留在末尾（截断），便于排查，但不再让用户对着
+    `LLM HTTP 429: {"error":{"code":"SetLimitExceeded"...` 猜。
+    注意保留 "LLM HTTP <code>" 前缀：_is_transient_error() 靠它识别 5xx。
+    """
+    tid, msg = _parse_error_payload(detail)
+    title, hint = _HTTP_ERROR_TITLES.get(
+        code, ("服务端繁忙，稍后重试" if 500 <= code < 600 else "请求失败", "")
+    )
+    parts = [f"LLM HTTP {code}（{title}）"]
+    if tid:
+        parts.append(f"[{tid}]")
+    if msg:
+        parts.append(": " + _clip_message(" ".join(msg.split())))
+    if hint:
+        parts.append("\n建议：" + hint)
+    return "".join(parts)
+
+
 _PROBE_PNG = _probe_png()
 
 
@@ -218,8 +284,8 @@ class LLMClient:
                 text = self.chat(messages, temperature, max_tokens)
                 yield ("content", text)
                 return
-            detail = e.read().decode("utf-8", "replace")[:400]
-            raise LLMError(f"LLM HTTP {e.code}: {detail}") from e
+            detail = e.read().decode("utf-8", "replace")[:4000]
+            raise LLMError(explain_http_error(e.code, detail)) from e
         except (ConnectionResetError, ConnectionError, TimeoutError,
                 urllib.error.URLError, OSError) as e:
             raise LLMError(f"LLM 连接中断: {e}") from e
@@ -236,8 +302,8 @@ class LLMClient:
                 data = json.loads(resp.read())
             return data["choices"][0]["message"]["content"]
         except urllib.error.HTTPError as e:
-            detail = e.read().decode("utf-8", "replace")[:400]
-            raise LLMError(f"LLM HTTP {e.code}: {detail}") from e
+            detail = e.read().decode("utf-8", "replace")[:4000]
+            raise LLMError(explain_http_error(e.code, detail)) from e
         except (KeyError, IndexError) as e:
             raise LLMError(f"LLM 响应格式异常: {e}") from e
         except urllib.error.URLError as e:
