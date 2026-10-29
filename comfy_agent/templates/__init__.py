@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from .image import TEMPLATES_IMAGE
+from .qwen import TEMPLATES_QWEN
 from .video import TEMPLATES_VIDEO
 
-_ALL = TEMPLATES_IMAGE + TEMPLATES_VIDEO
+_ALL = TEMPLATES_IMAGE + TEMPLATES_QWEN + TEMPLATES_VIDEO
 
 
 def all_templates() -> list:

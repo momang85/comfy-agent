@@ -83,6 +83,7 @@ VLM evaluation (region-level) → repair / iterate → deliver summary + files
 | inpaint / local_repair | mask-only repaint (hand/face auto-detect, user mask, box) | base image + face/hand seg weights (auto-download offered) |
 | minimax_t2v / i2v, ltx_i2v | video | those models by name (download dialog provided) |
 | merge_videos / extract_frame | video utils | VHS |
+| qwen_edit | instruction-based image edit: one image + one sentence ("make the bottom-left rectangle bright green") | Qwen-Image 2.1 (UNET + qwen3vl text encoder + VAE, matched by name) |
 
 ## Engine without the brain (CLI)
 
@@ -90,6 +91,7 @@ VLM evaluation (region-level) → repair / iterate → deliver summary + files
 python -m comfy_agent.cli status        # server status
 python -m comfy_agent.cli templates     # template catalog
 python -m comfy_agent.cli run t2i --json '{"prompt":"1cat, astronaut helmet","width":1024,"height":1024}'
+python -m comfy_agent.cli run qwen_edit --json '{"prompt":"turn the rectangle in the bottom-left corner bright green","image":"input.png"}'
 python -m comfy_agent.cli health        # per-template wiring audit
 ```
 
@@ -100,6 +102,7 @@ python -m comfy_agent.cli health        # per-template wiring audit
 - Local repair design: [docs/local-repair-auto-route-2026-09-13.md](docs/local-repair-auto-route-2026-09-13.md)
 - Market & adoption analysis: [docs/market-delta-and-adoption-2026-09-27.md](docs/market-delta-and-adoption-2026-09-27.md)
 - Custom node / Registry publishing: [docs/custom-node-registry.md](docs/custom-node-registry.md)
+- Qwen-Image instruction editing (qwen_edit wiring, measured on a 12 GB card): [docs/qwen-edit-2026-10-29.md](docs/qwen-edit-2026-10-29.md)
 
 ## Privacy & security
 
@@ -109,7 +112,7 @@ python -m comfy_agent.cli health        # per-template wiring audit
 
 ## Status
 
-343 unit tests green · used daily on a 12 GB Windows card (image + 5 s video) · v0.3.
+362 unit tests green · used daily on a 12 GB Windows card (image + 5 s video) · v0.3.
 
 ## License
 

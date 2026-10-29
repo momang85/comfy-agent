@@ -61,7 +61,14 @@ class TestRepairSkillInjected(unittest.TestCase):
         # t2i 的参数清单应包含 prompt/width/height
         self.assertIn("prompt", sp)
         self.assertIn("width", sp)
-        self.assertNotIn("resolution", sp)   # 幻觉参数不该出现在参数清单
+        # 反幻觉：模板目录里的参数必须来自模板真实声明。
+        # 曾经大脑对 t2i 编造过 resolution——t2i 至今没有这个参数，
+        # 所以按行断言（qwen_edit 确实有 resolution，是真实参数）。
+        t2i_line = next(ln for ln in sp.splitlines() if ln.startswith("- t2i:"))
+        self.assertNotIn("resolution", t2i_line)
+        qwen_line = next(ln for ln in sp.splitlines()
+                         if ln.startswith("- qwen_edit:"))
+        self.assertIn("resolution", qwen_line)
 
 
 if __name__ == "__main__":

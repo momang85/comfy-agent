@@ -83,6 +83,7 @@ VLM 区域级评估 → 修复/迭代 → 中文总结 + 文件交付
 | inpaint / local_repair | 局部重绘/局部修复（手/脸自动检测、用户遮罩、矩形框） | 原图 + 分割权重（缺失时弹窗下载） |
 | minimax_t2v / minimax_i2v / ltx_i2v | 视频生成 | 对应模型按名安装（缺了有下载弹窗） |
 | merge_videos / extract_frame | 视频拼接/取帧 | VHS |
+| qwen_edit | Qwen 指令改图：给一张图 + 一句自然语言指令（「把左下角的矩形改成亮绿色」），按指令重绘 | Qwen-Image 2.1（UNET + qwen3vl 文本编码器 + VAE，按名匹配） |
 
 ## 引擎单独用（无需 LLM）
 
@@ -90,6 +91,7 @@ VLM 区域级评估 → 修复/迭代 → 中文总结 + 文件交付
 python -m comfy_agent.cli status            # 服务器状态
 python -m comfy_agent.cli templates         # 模板目录
 python -m comfy_agent.cli run t2i --json '{"prompt":"1cat, astronaut helmet","width":1024,"height":1024}'
+python -m comfy_agent.cli run qwen_edit --json '{"prompt":"把左下角的矩形改成亮绿色","image":"input.png"}'
 python -m comfy_agent.cli health            # 全模板连线健康审计
 ```
 
@@ -103,6 +105,7 @@ python -m comfy_agent.cli health            # 全模板连线健康审计
 - 市场与采用策略：[docs/market-delta-and-adoption-2026-09-27.md](docs/market-delta-and-adoption-2026-09-27.md)
 - 新手走查报告：[docs/ux-walkthrough-novice-2026-09-13.md](docs/ux-walkthrough-novice-2026-09-13.md)
 - Custom node / Registry 发布：[docs/custom-node-registry.md](docs/custom-node-registry.md)
+- Qwen 指令改图（qwen_edit 接线与 12GB 卡实测数据）：[docs/qwen-edit-2026-10-29.md](docs/qwen-edit-2026-10-29.md)
 
 ## 常见问题
 
@@ -122,4 +125,4 @@ python -m comfy_agent.cli health            # 全模板连线健康审计
 
 ## 现状
 
-343 项单测全绿 · 12GB 显存 Windows 卡日常使用（图像 + 5 秒视频）· v0.3 · MIT。
+362 项单测全绿 · 12GB 显存 Windows 卡日常使用（图像 + 5 秒视频）· v0.3 · MIT。

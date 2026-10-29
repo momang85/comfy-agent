@@ -54,6 +54,7 @@ class Param:
 # value_not_in_list 拒绝——前置条件必须由引擎强制，而不是靠大脑记忆。
 INPUT_FILE_PARAMS: dict[str, list[tuple[str, str]]] = {
     "i2i": [("image", "image")],
+    "qwen_edit": [("image", "image")],
     "style_transfer": [("image", "image")],
     "upscale_pass": [("image", "image")],
     "inpaint": [("image", "image"), ("mask", "image")],

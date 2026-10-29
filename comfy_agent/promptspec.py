@@ -41,6 +41,13 @@ FAMILY_GUIDES = {
         "example": "一只戴宇航员头盔的橘猫漂浮在太空舱内，爪子轻轻拨动漂浮的按钮，"
                    "镜头缓慢推近，阳光从舷窗洒入，背景有轻微的仪器嗡鸣声",
     },
+    "qwen": {
+        "lang": "中文或英文自然语言（指令句，不是标签）",
+        "style": "一条祈使句说清「改什么→改成什么」，并补一句「其余保持不变」；"
+                 "一次只改一件事，位置/主体用图里看得见的描述指代，禁止堆标签和质量词",
+        "quality_prefix": "",
+        "example": "把左下角的深色矩形改成亮绿色，红色圆保持原样、位置和大小不变",
+    },
 }
 
 DEFAULT_NEGATIVE = {
@@ -51,6 +58,7 @@ DEFAULT_NEGATIVE = {
              "watermark, signature, text"),
     "ltx": "blurry, distorted, low quality, watermark",
     "minimax": "模糊, 变形, 低质量, 水印",
+    "qwen": "模糊, 变形, 低质量, 水印, 多余文字",
 }
 
 
@@ -69,9 +77,13 @@ _NEG_KEYS = {
     "sd15": ("worst quality", "low quality", "bad anatomy", "watermark", "text"),
     "ltx": ("blurry", "distorted", "watermark"),
     "minimax": ("模糊", "变形", "水印"),
+    "qwen": ("模糊", "变形", "水印"),
 }
 # 视频类家族：提示词应是自然语言（标签堆砌是常见误区）
-_NL_FAMILIES = ("minimax", "ltx")
+# qwen 是"改图指令"，同样属于自然语言家族（写标签会得到反效果），
+# 但它不是视频——动作/镜头词检查只对 _VIDEO_FAMILIES 生效。
+_NL_FAMILIES = ("minimax", "ltx", "qwen")
+_VIDEO_FAMILIES = ("minimax", "ltx")
 _MOTION_WORDS = ("camera", "zoom", "pan", "dolly", "tracking", "motion", "moving",
                  "turns", "walks", "runs", "sways", "drifts", "floats", "镜头",
                  "推近", "拉远", "移动", "转身", "走过", "飘", "缓慢", "动作")
@@ -136,9 +148,17 @@ VIDEO_VOCAB = {
 
 
 def block_coverage(family: str, prompt: str) -> dict:
-    """检查提示词覆盖了哪些维度块。返回 {present, missing, suggest}。"""
+    """检查提示词覆盖了哪些维度块。返回 {present, missing, suggest}。
+
+    只有两类家族有"维度块"概念：SD 系看图像八段式，视频系看
+    动作/镜头/光影/音效。其余家族（如 qwen 改图指令）不套词库，返回空。"""
     p = (prompt or "").lower()
-    blocks = BLOCK_VOCAB if family in ("sdxl", "sd15") else VIDEO_VOCAB
+    if family in ("sdxl", "sd15"):
+        blocks = BLOCK_VOCAB
+    elif family in _VIDEO_FAMILIES:
+        blocks = VIDEO_VOCAB
+    else:
+        return {"present": [], "missing": [], "suggest": {}}
     present, missing = [], []
     for name, words in blocks.items():
         if name in ("quality",) and family in ("sdxl", "sd15"):
@@ -185,7 +205,7 @@ def check_prompt(family: str, prompt: str, negative: str = "") -> dict:
         if len(p.split()) > 90:
             warnings.append("正向提示词偏长（>90 词），SD 系 77 token 截断，"
                             "建议把关键内容前移")
-    elif family in _NL_FAMILIES:
+    elif family in _VIDEO_FAMILIES:
         segs = [s.strip() for s in p.split(",") if s.strip()]
         avg_words = (sum(len(s.split()) for s in segs) / len(segs)) if segs else 0
         has_motion = any(w in p.lower() for w in _MOTION_WORDS)
@@ -228,7 +248,9 @@ def prepare(family: str, prompt: str, negative: str) -> tuple[str, str, list[str
     chk = check_prompt(family, prompt, negative)
     merged_neg, changed = merge_negative(family, negative)
     warns = list(chk["warnings"])
-    if changed:
+    # 只有"用户写了负面却漏掉关键项"才提示合并；用户压根没写负面时
+    # 补默认是正常行为，提示反而像报错（qwen_edit 实测踩过）。
+    if changed and (negative or "").strip():
         warns.append("负面提示词未包含家族默认项，已自动合并默认负面"
                      "（watermark/signature/质量词等）")
     return chk["prompt"], merged_neg, warns
