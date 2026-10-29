@@ -116,7 +116,7 @@ python -m comfy_agent.cli health        # per-template wiring audit
 
 ## Status
 
-380 unit tests green · used daily on a 12 GB Windows card (image + 5 s video) · v0.3.
+382 unit tests green · used daily on a 12 GB Windows card (image + 5 s video) · v0.3.
 
 ## License
 

@@ -398,7 +398,7 @@ class VLMClient(LLMClient):
                     "url": f"data:image/png;base64,{b64}"}},
                 {"type": "text", "text": "用一句话描述这张图的内容，只输出这句话"},
             ]}],
-            "max_tokens": 120,
+            "max_tokens": 512,
             "temperature": 0.0,
         }
         last = ""
@@ -414,9 +414,17 @@ class VLMClient(LLMClient):
                 return {"ok": False, "verified": False,
                         "transient": _is_transient_error(last), "error": last}
             if not reply:
+                # 空回复通常不是服务不可用，而是"思考预算吃光输出"：推理型模型
+                # （如 deepseek-v4 / glm-5 系列）会把 max_tokens 全花在推理上，
+                # 到 content 时已截断。放宽预算再试一次，别据此宣布看图不可用。
+                if i + 1 < attempts:
+                    body["max_tokens"] = max(body["max_tokens"] * 4, 2048)
+                    continue
                 return {"ok": True, "verified": False, "transient": False,
                         "reply": "",
-                        "error": "探针未取到回复（可能是瞬时问题），看图功能未经验证"}
+                        "error": ("探针只拿到空回复：模型可能把 max_tokens 用在了"
+                                  "推理上，或该端点不接受图片输入；"
+                                  "看图功能未经验证")}
             return {"ok": True, "verified": True, "transient": False,
                     "error": "", "reply": reply[:40]}
         return {"ok": False, "verified": False, "transient": True,

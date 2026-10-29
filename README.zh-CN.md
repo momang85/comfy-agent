@@ -128,4 +128,4 @@ python -m comfy_agent.cli health            # 全模板连线健康审计
 
 ## 现状
 
-380 项单测全绿 · 12GB 显存 Windows 卡日常使用（图像 + 5 秒视频）· v0.3 · MIT。
+382 项单测全绿 · 12GB 显存 Windows 卡日常使用（图像 + 5 秒视频）· v0.3 · MIT。

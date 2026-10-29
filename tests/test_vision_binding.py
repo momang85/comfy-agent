@@ -114,6 +114,49 @@ class TestVisionResolution(_SettingsSandbox):
         self.assertIn("Key", res["error"])
 
 
+class TestProbeEmptyReplyEscalation(_SettingsSandbox):
+    """空回复≠看图不可用：推理型模型会把 max_tokens 全花在思考上。
+
+    实测（tokenrhythm + deepseek-v4.1-flash，2026-10-29）：探针 120 token
+    永远返回空 content，但同一端点 judge_json（1500 token）正常出结构化
+    JSON。若不放宽预算重试，UI 会一直显示"看图功能未经验证"。
+    """
+
+    def _vlm(self):
+        from brain.llm import VLMClient
+        self._write(llm_base_url="https://new.example/v1",
+                    llm_api_key=FAKE_KEY, vlm_model="vision-model")
+        return VLMClient()
+
+    def test_empty_then_ok_escalates_budget(self):
+        from unittest import mock
+        from brain.llm import VLMClient
+        budgets, replies = [], ["", "蓝色背景正中央有个白色正方形。"]
+
+        def fake_post(_self, body):
+            budgets.append(body["max_tokens"])
+            return replies.pop(0)
+
+        with mock.patch.object(VLMClient, "_post", fake_post):
+            res = self._vlm().probe()
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["verified"])
+        self.assertEqual(len(budgets), 2)
+        self.assertLess(budgets[0], budgets[1])       # 第二次放宽
+        self.assertGreaterEqual(budgets[1], 2048)
+
+    def test_empty_twice_is_unverified_not_unavailable(self):
+        from unittest import mock
+        from brain.llm import VLMClient
+        with mock.patch.object(VLMClient, "_post", lambda _self, body: ""):
+            res = self._vlm().probe()
+        self.assertTrue(res["ok"])          # 没报错 ≠ 服务不可用
+        self.assertFalse(res["verified"])
+        self.assertFalse(res["transient"])
+        self.assertIn("max_tokens", res["error"])
+
+
+
 # ---------------- 2. analyze_image 与上传绑定 ----------------
 
 class _UploadCtx:
