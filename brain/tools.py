@@ -112,6 +112,88 @@ def tool_list_models(ctx: ToolContext, args: dict) -> dict:
     return {"ok": True, "models": ctx.client.models(folder)}
 
 
+def tool_comfy_status(ctx: ToolContext, args: dict) -> dict:
+    """本机 ComfyUI 运行状态：版本、GPU、显存，以及每个模板在这张卡上跑不跑得动。
+
+    用户问「我这张卡能跑吗 / 什么显卡 / 多少显存 / ComfyUI 什么版本」时先调它，
+    不要靠猜，也不要拿模板标注的显存当本机答案。
+    """
+    from comfy_agent.templates import _ALL as ALL_TEMPLATES
+
+    try:
+        stats = ctx.client.system_stats()
+    except Exception as e:                      # 连不上就别把异常抛给模型
+        return {"ok": False,
+                "error": f"连不上 ComfyUI（{type(e).__name__}: {str(e)[:200]}）"
+                         "——先确认 ComfyUI 服务已启动、端口对得上"}
+
+    sysinfo = stats.get("system") or {}
+    # 用十进制 GB（1e9 字节）而不是 GiB：显卡标称的「12GB」就是 12.79e9 字节，
+    # 换成 GiB 会显示 11.9，然后所有标注「显存~12GB」的模板都被判成跑不动。
+    gb = 1e9
+    devices = []
+    for d in stats.get("devices") or []:
+        devices.append({
+            # 名字里带 " : cudaMallocAsync" 之类的后端后缀，截掉更像人间回答
+            "name": str(d.get("name", "")).split(" : ")[0].strip(),
+            "vram_total_gb": round(d.get("vram_total", 0) / gb, 1),
+            "vram_free_gb": round(d.get("vram_free", 0) / gb, 1),
+        })
+    vram_gb = max([d["vram_total_gb"] for d in devices], default=0.0)
+
+    # 每个模板一条：显存够不够 + 本机缺哪些模型。用户问「能跑吗」时要的两件事
+    # 是一条答案，不能只答显存、回头执行时报缺模型。
+    knowledge = getattr(ctx, "knowledge", None)
+    rows, runnable_now = [], []
+    for tpl in ALL_TEMPLATES:
+        est = float(getattr(tpl, "est_vram_gb", 0) or 0)
+        if vram_gb > 0 and est > 0:
+            if est <= vram_gb * 0.8:
+                fit = "can_run"
+            elif est <= vram_gb:
+                fit = "tight"
+            else:
+                fit = "too_big"
+        else:
+            fit = "unknown"
+        used = (tpl.models_used_for({}) if hasattr(tpl, "models_used_for")
+                else tpl.models_used)
+        missing = []
+        if knowledge is not None:
+            # 用 model_exists 而不是模糊 find_model：后者会把不同的模型当同款，
+            # 于是「能跑」的判断会把真缺的模型放过（见 knowledge.py:354 的注释）。
+            missing = [m for m in used if not knowledge.model_exists(m)]
+        rows.append({"id": tpl.id, "name": tpl.name, "vram_gb": est,
+                     "fit": fit, "missing_models": missing,
+                     "ready": fit in ("can_run", "tight") and not missing})
+        if fit in ("can_run", "tight") and not missing:
+            runnable_now.append(tpl.id)
+
+    ready_ids = sorted(set(runnable_now))
+    # 第一行就给结论：模型最容易漏掉「其实有能跑的那个」，把 ready 列表顶到最前面。
+    summary = ("现在能直接跑：" + ("、".join(ready_ids) if ready_ids
+                                  else "无（都缺模型或显存不足）"))
+    return {
+        "ok": True,
+        "summary": summary,
+        "comfyui_version": sysinfo.get("comfyui_version"),
+        "os": sysinfo.get("os"),
+        "python": str(sysinfo.get("python_version", "")).split(" ")[0],
+        "pytorch": str(sysinfo.get("pytorch_version", "")).split(" ")[0],
+        "ram_total_gb": round(sysinfo.get("ram_total", 0) / gb, 1),
+        "devices": devices,
+        "vram_total_gb": vram_gb,
+        "templates": rows,
+        "runnable_now": ready_ids,
+        "note": "每个模板看 ready 字段回答「能不能跑」：ready=true 才算此刻真能跑。"
+                "fit 只讲显存（can_run ≤ 总显存 80%；tight = 吃紧但能跑，关别的程序/"
+                "降分辨率；too_big = 不建议本机跑）；missing_models 非空的模板跑不了，"
+                "**不要说成能跑**，缺什么就报什么。free 是此刻空闲显存，不是上限，"
+                "ComfyUI 会先卸载不用的模型再加载新的。",
+    }
+
+
+
 def tool_upload_image(ctx: ToolContext, args: dict) -> dict:
     """上传用户图片到 /input。args: {path}"""
     p = Path(args.get("path", ""))
@@ -1121,6 +1203,10 @@ TOOLS: dict[str, dict] = {
                      "args": {"template_id": "str", "params": "dict"}},
     "list_models": {"fn": tool_list_models,
                     "desc": "本机模型清单", "args": {"folder?": "str"}},
+    "comfy_status": {"fn": tool_comfy_status,
+                     "desc": "本机 ComfyUI 状态：版本/GPU/显存，以及各模板这张卡跑不跑得动"
+                             "（用户问「我能跑吗/什么显卡/多少显存/什么版本」时先调它）",
+                     "args": {}},
     "upload_image": {"fn": tool_upload_image,
                      "desc": "上传用户图片到 /input",
                      "args": {"path": "str"}},

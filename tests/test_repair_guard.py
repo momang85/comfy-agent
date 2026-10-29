@@ -71,5 +71,50 @@ class TestRepairSkillInjected(unittest.TestCase):
         self.assertIn("resolution", qwen_line)
 
 
+class TestToolLoopRunsOnce(unittest.TestCase):
+    """handle() 每回合只能跑一次工具循环。
+
+    真实缺陷（2026-10-29 换 provider 后实测）：try 分支里跑了一次
+    `_tool_loop`，`else` 分支里又跑了一次 —— 每条用户消息都会向模型发两遍
+    请求、执行两遍工具、把同一个任务做两次；第二次还会看见第一次留下的
+    history，于是回答变成"我查不到"式的自我重复，最终交付的却是兜底文案。
+    """
+
+    def test_handle_calls_tool_loop_once(self):
+        from brain.agent import Brain
+        b = Brain(verbose=False)
+        calls = []
+
+        def fake_loop(run_count):
+            calls.append(run_count)
+            return "本机 ComfyUI 版本我查不到"
+
+        with mock.patch.object(b, "_tool_loop", fake_loop), \
+                mock.patch.object(b, "_auto_remember", lambda *a, **k: None), \
+                mock.patch.object(b, "_write_task_report", lambda *a, **k: None):
+            text = b.handle("看下本机 ComfyUI 的版本")
+        self.assertEqual(len(calls), 1, f"工具循环跑了 {len(calls)} 次")
+        self.assertIn("查不到", text)          # 模型的话原样交付，不被兜底文案顶掉
+
+    def test_model_reply_reaches_user(self):
+        """模型不再调工具时的原话必须到达用户（回归 3f27426 的 return ""）。
+
+        真实表现：每个回合都返回"本轮任务已完成，先给你看当前结果：…"，
+        模型自己说的解释、答案、追问全被这句模板覆盖。
+        """
+        from brain.agent import Brain
+        b = Brain(verbose=False)
+        model_said = "这张图里是一只橘猫，想改成什么风格？"
+
+        with mock.patch.object(b, "_chat_streamed", lambda: model_said), \
+                mock.patch.object(b, "_auto_remember", lambda *a, **k: None), \
+                mock.patch.object(b, "_write_task_report", lambda *a, **k: None):
+            text = b.handle("看看这张图")
+        self.assertEqual(text.strip(), model_said)
+        self.assertNotIn("本轮任务已完成", text)
+
+
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

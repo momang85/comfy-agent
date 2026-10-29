@@ -151,8 +151,6 @@ class Brain:
             elif kind == "config":
                 interrupted += ("若刚换了服务商或 Key，多半是余额/配置问题；"
                                 "到 ⚙ 里检查后再继续。")
-        else:
-            final_reply = self._tool_loop(run_count)
 
         # 任务闭环：本轮真的生成了产物才沉淀技能（失败经验也记录）
         self._auto_remember(user_message)
@@ -337,7 +335,11 @@ class Brain:
                             "graph": self.ctx.draft,
                             "meta": self.ctx.draft_meta})
             self._compact_history()
-        return ""
+        # 模型说"可以交付了"时的原话必须原样带回；只有轮数用尽才交给兜底汇报。
+        # 3f27426 把循环从 handle() 抽成方法时漏了这一句，此后每条用户消息
+        # 收到的都是 _fallback_summary() 的模板文案（"本轮任务已完成，先给你
+        # 看当前结果……"），模型自己说的话一句都没到达用户。
+        return final_reply
 
     def _fallback_summary(self) -> str:
         """轮数用尽时的兜底汇报：说清产物与评估结论，而不是"请继续提要求"。
