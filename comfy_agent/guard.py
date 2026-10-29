@@ -53,6 +53,25 @@ def comfy_root_from_file() -> str:
     return ""
 
 
+def bundle_python(root):
+    """便携包/venv 里的 python 解释器（macOS 上没有 python\\python.exe）。
+
+    Windows 便携包：python\\python.exe；官方 portable：python_embeded\\python.exe；
+    macOS/Linux：python/bin/python3、venv/bin/python3、.venv/bin/python3。
+    找不到返回 None（调用方据此判定"没有可用的解释器"）。"""
+    from pathlib import Path
+    for rel in (("python", "python.exe"),
+                ("python_embeded", "python.exe"),
+                ("python", "bin", "python3"),
+                ("venv", "bin", "python3"),
+                (".venv", "bin", "python3"),
+                ("python", "python3")):
+        p = Path(root).joinpath(*rel)
+        if p.exists():
+            return p
+    return None
+
+
 def try_start_comfy(timeout: float = 120.0) -> bool:
     """ComfyUI 不可达时尽力拉起（仅当 AUTO_START_COMFY=1，默认关闭）。
 
@@ -66,9 +85,9 @@ def try_start_comfy(timeout: float = 120.0) -> bool:
     root = os.environ.get("COMFY_ROOT") or comfy_root_from_file()
     if not root:
         return False
-    py = Path(root) / "python" / "python.exe"
+    py = bundle_python(root)
     main = Path(root) / "ComfyUI" / "main.py"
-    if not py.exists() or not main.exists():
+    if py is None or not main.exists():
         return False
     flags = 0
     if os.name == "nt":

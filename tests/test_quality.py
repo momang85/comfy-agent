@@ -370,6 +370,33 @@ class TestHardwareGuard(unittest.TestCase):
         t = guard.gpu_temp_c()
         self.assertTrue(t is None or 0 < t < 120)
 
+    def test_bundle_python_finds_posix_venv(self):
+        """macOS 上没有 python\\python.exe：必须能认 venv/bin/python3。"""
+        import tempfile
+        from pathlib import Path
+        from comfy_agent import guard
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "venv" / "bin").mkdir(parents=True)
+            py = root / "venv" / "bin" / "python3"
+            py.write_text("#!/bin/sh\n", encoding="utf-8")
+            self.assertEqual(guard.bundle_python(root), py)
+            # 没有解释器时如实返回 None（调用方据此放弃自启，而不是崩）
+            empty = root / "empty"
+            empty.mkdir()
+            self.assertIsNone(guard.bundle_python(empty))
+
+    def test_bundle_python_prefers_windows_portable(self):
+        import tempfile
+        from pathlib import Path
+        from comfy_agent import guard
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "python").mkdir()
+            py = root / "python" / "python.exe"
+            py.write_text("", encoding="utf-8")
+            self.assertEqual(guard.bundle_python(root), py)
+
 
 class TestInputAutoUpload(unittest.TestCase):
     """输入文件由引擎代传 /input（P0-4）。"""

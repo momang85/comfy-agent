@@ -1,0 +1,11 @@
+# 行尾统一：跨平台交付的关键一条。
+# 仓库在 Windows 上开发（core.autocrlf=true），但 .sh / .command 必须保持 LF，
+# 否则 macOS 上会报 "bad interpreter: /usr/bin/env: bash^M"。
+* text=auto
+
+*.sh          text eol=lf
+*.command     text eol=lf
+*.bat         text eol=crlf
+*.png         binary
+*.webp        binary
+*.gif         binary

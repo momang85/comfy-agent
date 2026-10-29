@@ -219,6 +219,8 @@ class TestSearch(_Base):
         if not cache.is_dir() or not list(cache.glob("*model-list.json")):
             self.skipTest("本机无 ComfyUI-Manager 模型目录")
         want = "ltx-video-2b-v0.9.1.safetensors"
+        # _Base 把 MODELS_DIR 指到系统临时目录，所以"装没装"这一层必须用假根
+        # 重新问一次；候选本身来自真实 Manager 目录。
         cands = md.search_models(want, offline=True)
         if not cands:
             self.skipTest("Manager 目录里没有该文件")
@@ -227,8 +229,12 @@ class TestSearch(_Base):
         self.assertEqual(top["folder"], "checkpoints")
         self.assertGreater(top["size"], 1024 ** 3)
         self.assertEqual(top["source"], "manager")
-        self.assertTrue(top["fit"]["fits"])
         self.assertTrue(top["target_dir"])
+        # 适配评估只验形状：fits 取决于跑测试的盘还剩多少空间
+        # （实测 C: 只剩 4.7GB 时 fits=False，与代码无关，别写成硬断言）。
+        self.assertIsInstance(top["fit"]["fits"], bool)
+        self.assertTrue(top["fit"]["disk_free_text"])
+        self.assertIsInstance(top["fit"]["notes"], list)
 
     def test_folder_filter_applied(self):
         cands = md.search_models("ltx-video-2b-v0.9.1.safetensors",

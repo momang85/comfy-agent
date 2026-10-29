@@ -27,6 +27,7 @@
 3. 启动：
    - **Windows**：双击 `scripts\install.bat`（填一次 ComfyUI 路径）→ 双击 `scripts\一键启动.bat` → 浏览器打开 `http://127.0.0.1:8899`。
    - **macOS / Linux**：`./scripts/install.sh` → `./scripts/start.sh`（端口相同）。
+     从 Windows 拷贝过去的文件夹：先 `chmod +x scripts/*.sh`；若 Gatekeeper 拦截再 `xattr -dr com.apple.quarantine .`；视频抽帧需 `brew install ffmpeg`。
 4. 直接说人话：「画一只戴宇航头盔的赛博朋克橘猫，1024x1024，4 张」。
 
 > ComfyUI 目录解析顺序（**直接跑 CLI/MCP 也生效**，不依赖启动脚本）：环境变量 `COMFY_ROOT` → 项目根 `comfy_root.local` → 常见安装位置探测。

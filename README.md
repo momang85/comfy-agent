@@ -29,6 +29,8 @@
 3. Launch:
    - **Windows**: double-click `scripts\install.bat` (asked once for your ComfyUI path) → double-click `scripts\一键启动.bat` → browser opens `http://127.0.0.1:8899`.
    - **macOS / Linux**: `./scripts/install.sh` → `./scripts/start.sh` (same ports).
+     Copied the folder from a Windows machine? Run `chmod +x scripts/*.sh` once, and
+     `xattr -dr com.apple.quarantine .` if Gatekeeper complains. Video frame extraction needs `brew install ffmpeg`.
 4. Type what you want: *"a cyberpunk orange cat wearing an astronaut helmet, 1024×1024, 4 images"*.
 
 > ComfyUI root resolution (works for CLI/MCP runs too, not just the launcher scripts): `COMFY_ROOT` env → `comfy_root.local` in the project root → common-install probing.
