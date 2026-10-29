@@ -13,6 +13,7 @@
 
 - **执行-修复闭环**：本地预校验（对照本机 1500+ 节点签名）→ 服务器结构化报错解析 → 参数级修复（≤3 轮）→ VLM 区域级评估 → 语义级修复。评估不通过绝不假装成功。
 - **局部修复真的只修局部**：说「修手/修脸」自动走遮罩链路——**遮罩区外像素逐位不变**（实测验证）；定位不到区域会如实说，不拿整图重绘凑数。
+- **指令改图，不用手画遮罩**（Qwen-Image 2.1）：一张图 + 一句人话——「把左下角的矩形改成亮绿色」。加 `region="x,y,w,h"` 就只重绘那一块：**区域外像素逐位不变（做差实测 0 变化）**；加 `structure="canny"` 先锁住原图边缘再换材质/风格；`batch` 一次出 1–4 张。
 - **缺模型自己找**：搜 HuggingFace（含镜像）/ Civitai / ModelScope / 本机 Manager 缓存，弹窗确认（文件/大小/来源/适配/存放目录），带进度条下载，完成后**自动重跑刚才失败的任务**。
 - **BYOK 任意 OpenAI 兼容服务**：智谱 / DeepSeek / Kimi / OpenAI / 火山方舟 / 本机 **Ollama**；视觉默认跟随大脑配置，带一键**视觉自检**。
 - **GPU 护栏**：温度熔断（默认 88°C 先中断）、显存仪表、OOM 自动降分辨率/批数重试一次。
@@ -84,7 +85,7 @@ VLM 区域级评估 → 修复/迭代 → 中文总结 + 文件交付
 | inpaint / local_repair | 局部重绘/局部修复（手/脸自动检测、用户遮罩、矩形框） | 原图 + 分割权重（缺失时弹窗下载） |
 | minimax_t2v / minimax_i2v / ltx_i2v | 视频生成 | 对应模型按名安装（缺了有下载弹窗） |
 | merge_videos / extract_frame | 视频拼接/取帧 | VHS |
-| qwen_edit | Qwen 指令改图：给一张图 + 一句自然语言指令（「把左下角的矩形改成亮绿色」），按指令重绘 | Qwen-Image 2.1（UNET + qwen3vl 文本编码器 + VAE，按名匹配） |
+| qwen_edit | Qwen 指令改图：给一张图 + 一句自然语言指令（「把左下角的矩形改成亮绿色」）。`region` 只重绘指定框（框外像素不变）、`structure=canny` 锁原图边缘换材质、`batch` 一出多张 | Qwen-Image 2.1（UNET + qwen3vl 文本编码器 + VAE，按名匹配；`structure=canny` 另需 fun controlnet union 补丁） |
 
 ## 引擎单独用（无需 LLM）
 
@@ -93,6 +94,7 @@ python -m comfy_agent.cli status            # 服务器状态
 python -m comfy_agent.cli templates         # 模板目录
 python -m comfy_agent.cli run t2i --json '{"prompt":"1cat, astronaut helmet","width":1024,"height":1024}'
 python -m comfy_agent.cli run qwen_edit --json '{"prompt":"把左下角的矩形改成亮绿色","image":"input.png"}'
+python -m comfy_agent.cli run qwen_edit --json '{"prompt":"改成金属蓝","image":"input.png","structure":"canny"}'
 python -m comfy_agent.cli health            # 全模板连线健康审计
 ```
 
@@ -126,4 +128,4 @@ python -m comfy_agent.cli health            # 全模板连线健康审计
 
 ## 现状
 
-362 项单测全绿 · 12GB 显存 Windows 卡日常使用（图像 + 5 秒视频）· v0.3 · MIT。
+380 项单测全绿 · 12GB 显存 Windows 卡日常使用（图像 + 5 秒视频）· v0.3 · MIT。

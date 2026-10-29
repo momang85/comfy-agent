@@ -14,6 +14,7 @@
 
 - **Execution-repair loop**: local pre-validation against your machine's node signatures (1500+) → structured server errors → parameter repair (≤3 rounds) → VLM region-level evaluation → semantic repair. Failed evaluations never claim success.
 - **Local repair that really is local**: "fix the hand / face" routes to a mask pipeline — pixels outside the mask stay **bit-identical** (verified). If no region is detected it says so instead of pretending.
+- **Instruction-based editing** (Qwen-Image 2.1): one image + one sentence — *"make the bottom-left rectangle bright green"*. Add `region="x,y,w,h"` to repaint only that box: **pixels outside it are bit-identical (0 changed, diff-verified)**. Add `structure="canny"` to lock the original edges while you swap material or style; `batch` for up to 4 variations in one pass.
 - **Missing model? It finds it**: searches HuggingFace (+mirror) / Civitai / ModelScope / local Manager cache, shows a confirm dialog (file / size / source / fit / target dir), downloads with progress, then **re-runs the failed task automatically**.
 - **BYOK, any OpenAI-compatible API**: z.ai / DeepSeek / Kimi / OpenAI / Volcano Ark / local **Ollama**. Vision follows the brain's settings by default, with a one-click **vision self-check**.
 - **GPU safety**: temperature fuse (default 88 °C, interrupt-first), VRAM gauge, OOM → auto lower resolution/batch and retry once.
@@ -85,7 +86,7 @@ VLM evaluation (region-level) → repair / iterate → deliver summary + files
 | inpaint / local_repair | mask-only repaint (hand/face auto-detect, user mask, box) | base image + face/hand seg weights (auto-download offered) |
 | minimax_t2v / i2v, ltx_i2v | video | those models by name (download dialog provided) |
 | merge_videos / extract_frame | video utils | VHS |
-| qwen_edit | instruction-based image edit: one image + one sentence ("make the bottom-left rectangle bright green") | Qwen-Image 2.1 (UNET + qwen3vl text encoder + VAE, matched by name) |
+| qwen_edit | instruction-based image edit: one image + one sentence ("make the bottom-left rectangle bright green"); `region` = repaint one box only (outside stays identical), `structure=canny` = keep the original edges, `batch` 1–4 | Qwen-Image 2.1 (UNET + qwen3vl text encoder + VAE, matched by name; `structure=canny` also needs the fun-controlnet-union patch) |
 
 ## Engine without the brain (CLI)
 
@@ -94,6 +95,7 @@ python -m comfy_agent.cli status        # server status
 python -m comfy_agent.cli templates     # template catalog
 python -m comfy_agent.cli run t2i --json '{"prompt":"1cat, astronaut helmet","width":1024,"height":1024}'
 python -m comfy_agent.cli run qwen_edit --json '{"prompt":"turn the rectangle in the bottom-left corner bright green","image":"input.png"}'
+python -m comfy_agent.cli run qwen_edit --json '{"prompt":"make it metallic blue","image":"input.png","structure":"canny"}'
 python -m comfy_agent.cli health        # per-template wiring audit
 ```
 
@@ -114,7 +116,7 @@ python -m comfy_agent.cli health        # per-template wiring audit
 
 ## Status
 
-362 unit tests green · used daily on a 12 GB Windows card (image + 5 s video) · v0.3.
+380 unit tests green · used daily on a 12 GB Windows card (image + 5 s video) · v0.3.
 
 ## License
 

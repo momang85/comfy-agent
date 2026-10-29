@@ -473,7 +473,11 @@ def run_template(template_id: str, params: dict, **kw) -> dict:
     # 缺失仍按缺模型报错。
     # 判"缺"之前先让世界模型（含落盘兜底）复核：缓存是快照、会过期，
     # 文件确实在盘上就不该再报缺（项目 5：下完模型仍判缺的根因之一）
-    missing = [m for m in tpl.models_used
+    # models_used_for 让模板按参数收紧依赖（如结构控制才要 controlnet 补丁）；
+    # 没有该方法的模板仍用静态 models_used
+    tpl_models = (tpl.models_used_for(params)
+                  if hasattr(tpl, "models_used_for") else tpl.models_used)
+    missing = [m for m in tpl_models
                if not _model_present(knowledge, m, _folders_for(m))
                and not (ckpt_ok and m == ckpt_default)]
     if missing:
